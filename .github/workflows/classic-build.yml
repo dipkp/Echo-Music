@@ -1,0 +1,124 @@
+name: Echo 5.2.85 Classic Hotfix Build
+
+on:
+  push:
+    branches:
+      - classic-5.2.85-hotfix
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Echo 5.2.85 Classic
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36 and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+
+      - name: Create local.properties
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+      - name: Apply 5.2.85 playback expiry hotfix
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/src/main/kotlin/com/music/echo/utils/YTPlayerUtils.kt")
+          text = path.read_text(encoding="utf-8")
+          lines = text.splitlines()
+
+          marker = "streamExpiresInSeconds = streamPlayerResponse.streamingData?.expiresInSeconds"
+          matches = [i for i, line in enumerate(lines) if marker in line]
+          if len(matches) != 1:
+              raise SystemExit(f"Expected exactly one Echo 5.2.85 expiry block, found {len(matches)}")
+
+          start = matches[0]
+          end = None
+          for i in range(start + 1, min(start + 12, len(lines))):
+              if 'Timber.tag(logTag).d("Stream expires in: $streamExpiresInSeconds seconds")' in lines[i]:
+                  end = i
+                  break
+
+          if end is None:
+              raise SystemExit("Could not find the end of the Echo 5.2.85 expiry block")
+
+          original = "\n".join(lines[start:end + 1])
+          if 'continue' not in original or 'Stream expiration time not found' not in original:
+              raise SystemExit("Playback block does not match expected Echo 5.2.85 source; refusing to patch")
+
+          indent = lines[start][:len(lines[start]) - len(lines[start].lstrip())]
+          i4 = indent + "    "
+          i8 = indent + "        "
+          i12 = indent + "            "
+
+          replacement = [
+              indent + "streamExpiresInSeconds = streamPlayerResponse.streamingData?.expiresInSeconds",
+              indent + "if (streamExpiresInSeconds == null) {",
+              i4 + "// YouTube can omit streamingData.expiresInSeconds while still returning",
+              i4 + "// a usable googlevideo URL. Recover remaining lifetime from its `expire`",
+              i4 + "// query parameter instead of rejecting the stream.",
+              i4 + "val expireTimestamp = runCatching {",
+              i8 + 'android.net.Uri.parse(streamUrl).getQueryParameter("expire")?.toLongOrNull()',
+              i4 + "}.getOrNull()",
+              i4 + "val nowSeconds = System.currentTimeMillis() / 1000L",
+              i4 + "streamExpiresInSeconds = expireTimestamp",
+              i8 + "?.minus(nowSeconds)",
+              i8 + "?.coerceIn(60L, 21600L)",
+              i8 + "?.toInt()",
+              i8 + "?: 3600",
+              i4 + "Timber.tag(logTag).w(",
+              i8 + '"Stream expiration missing; recovered/fallback lifetime: $streamExpiresInSeconds seconds"',
+              i4 + ")",
+              indent + "}",
+              "",
+              indent + 'Timber.tag(logTag).d("Stream expires in: $streamExpiresInSeconds seconds")',
+          ]
+
+          lines[start:end + 1] = replacement
+          path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print("Echo 5.2.85 playback expiry hotfix applied successfully.")
+          PY
+
+      - name: Verify exact classic version
+        run: |
+          grep 'versionCode = 526' app/build.gradle.kts
+          grep 'versionName = "5.2.85"' app/build.gradle.kts
+          grep 'applicationId = "iad1tya.echo.music"' app/build.gradle.kts
+
+      - name: Build safe side-by-side APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleUniversalFossDebug --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p hotfix-apk
+          APK="$(find app/build/outputs/apk -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" hotfix-apk/Echo-5.2.85-Classic-Hotfix-TEST.apk
+          ls -lh hotfix-apk/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Echo-5.2.85-Classic-Hotfix-TEST
+          path: hotfix-apk/Echo-5.2.85-Classic-Hotfix-TEST.apk
+          if-no-files-found: error
