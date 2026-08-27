@@ -97,6 +97,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     private val extensionDirectory = File(context.filesDir, "extensions").apply { mkdirs() }
     private val mutex = Mutex()
     private val resolvedStreams = ConcurrentHashMap<String, CachedResolvedStream>()
+    private val classicTrackMappings = ConcurrentHashMap<String, String>()
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -117,6 +118,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     suspend fun reload() = withContext(Dispatchers.IO) {
         val selectedClient = mutex.withLock {
             resolvedStreams.clear()
+            classicTrackMappings.clear()
             val parsed = extensionDirectory.listFiles()
                 .orEmpty()
                 .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) }
@@ -139,6 +141,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             parsed.firstOrNull { it.id == activeId }?.client
         }
         selectedClient?.onExtensionSelected()
+        Unit
     }
 
     suspend fun ensureLoaded() {
@@ -274,6 +277,47 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         resolved.mimeType?.let(builder::setMimeType)
         return builder.build()
     }
+
+    /** Resolves a song shown by the classic UI through the selected extension backend. */
+    suspend fun resolveClassicSong(
+        classicMediaId: String,
+        title: String,
+        artists: List<String>,
+    ): ResolvedStream = withContext(Dispatchers.IO) {
+        ensureLoaded()
+        val selectedId = _selectedMusicExtensionId.value
+            ?: error("Select a music extension in Settings → Extensions")
+
+        classicTrackMappings[classicMediaId]?.takeIf {
+            extensionIdFrom(it) == selectedId
+        }?.let { return@withContext resolve(it) }
+
+        val primaryArtist = artists.firstOrNull().orEmpty()
+        val query = listOf(title, primaryArtist).filter(String::isNotBlank).joinToString(" ")
+        require(query.isNotBlank()) { "Song title is unavailable for extension lookup" }
+
+        val candidates = search(query).summaries
+            .flatMap { it.items }
+            .filterIsInstance<SongItem>()
+        val match = candidates.maxByOrNull { candidate ->
+            var score = 0
+            if (candidate.title.normalizedMatchText() == title.normalizedMatchText()) score += 4
+            if (primaryArtist.isNotBlank() && candidate.artists.any {
+                    it.name.normalizedMatchText() == primaryArtist.normalizedMatchText()
+                }
+            ) score += 2
+            if (candidate.title.normalizedMatchText().contains(title.normalizedMatchText())) score += 1
+            score
+        } ?: error("$title was not found by the selected extension")
+
+        classicTrackMappings[classicMediaId] = match.id
+        resolve(match.id)
+    }
+
+    private fun String.normalizedMatchText(): String = lowercase(Locale.ROOT)
+        .replace(Regex("\\([^)]*\\)|\\[[^]]*]"), " ")
+        .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        .trim()
 
     private fun selectedEntry(): Entry? {
         val selected = _selectedMusicExtensionId.value ?: return null

@@ -3003,6 +3003,27 @@ class MusicService :
                 Timber.tag("MusicService").i("BYPASSING CACHE for $mediaId due to quality change")
             }
 
+            val extensionManager = ClassicExtensionManager.get(this@MusicService)
+            if (extensionManager.selectedMusicExtensionId.value != null) {
+                val resolved = runBlocking(Dispatchers.IO) {
+                    val dbSong = database.song(mediaId).firstOrNull()
+                    val queueMetadata = player.mediaItems
+                        .firstOrNull { it.mediaId == mediaId }
+                        ?.metadata
+                    val title = dbSong?.title ?: queueMetadata?.title
+                        ?: error("Song title is unavailable")
+                    val artists = dbSong?.artists?.map { it.name }
+                        ?: queueMetadata?.artists?.map { it.name }.orEmpty()
+                    extensionManager.resolveClassicSong(mediaId, title, artists)
+                }
+                Timber.tag("MusicService").i("EXTENSION STREAM: $mediaId")
+                return@Factory dataSpec.buildUpon()
+                    .setUri(resolved.uri)
+                    .setHttpRequestHeaders(resolved.headers)
+                    .setCustomData(resolved.source)
+                    .build()
+            }
+
             Timber.tag("MusicService").i("FETCHING STREAM: $mediaId | quality=$lockedQuality")
             val playbackData = runBlocking(Dispatchers.IO) {
                 val dbSong = database.song(mediaId).firstOrNull()
