@@ -35,6 +35,7 @@ import iad1tya.echo.music.db.entities.LocalItem
 import iad1tya.echo.music.db.entities.Song
 import iad1tya.echo.music.db.entities.SpeedDialItem
 import iad1tya.echo.music.extensions.filterVideoSongs
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
 import iad1tya.echo.music.extensions.toEnum
 import iad1tya.echo.music.models.SimilarRecommendation
 import iad1tya.echo.music.utils.SyncUtils
@@ -76,6 +77,7 @@ class HomeViewModel @Inject constructor(
     val database: MusicDatabase,
     val syncUtils: SyncUtils,
 ) : ViewModel() {
+    private val extensionManager = ClassicExtensionManager.get(context)
     val isRefreshing = MutableStateFlow(false)
     val isLoading = MutableStateFlow(false)
     val isRandomizing = MutableStateFlow(false)
@@ -527,42 +529,16 @@ class HomeViewModel @Inject constructor(
 
     
     private suspend fun loadNetworkDataPhase() {
-        val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-        val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
-        val hideYoutubeShorts = context.dataStore.get(HideYoutubeShortsKey, false)
-
-        coroutineScope {
-            launch(Dispatchers.IO) { getDailyDiscover() }
-            launch(Dispatchers.IO) { getCommunityPlaylists() }
-            launch(Dispatchers.IO) { loadSimilarRecommendations() }
-            launch(Dispatchers.IO) {
-                YouTube.home().onSuccess { page ->
-                    homePage.value = page.copy(
-                        sections = page.sections.mapNotNull { section ->
-                            val filteredItems = section.items
-                                .filterExplicit(hideExplicit)
-                                .filterVideoSongs(hideVideoSongs)
-                                .filterYoutubeShorts(hideYoutubeShorts)
-                            if (filteredItems.isEmpty()) null else section.copy(items = filteredItems)
-                        }
-                    )
-                }.onFailure { reportException(it) }
-            }
-            launch(Dispatchers.IO) {
-                YouTube.explore().onSuccess { page ->
-                    explorePage.value = page.copy(
-                        newReleaseAlbums = page.newReleaseAlbums.filterExplicit(hideExplicit)
-                    )
-                }.onFailure { reportException(it) }
-            }
-            if (YouTube.cookie != null) {
-                launch(Dispatchers.IO) { loadAccountPlaylists() }
-            }
-        }
-
-        
-        allYtItems.value = similarRecommendations.value?.flatMap { it.items }.orEmpty() +
-                homePage.value?.sections?.flatMap { it.items }.orEmpty()
+        extensionManager.ensureLoaded()
+        dailyDiscover.value = emptyList()
+        communityPlaylists.value = emptyList()
+        similarRecommendations.value = emptyList()
+        accountPlaylists.value = emptyList()
+        explorePage.value = null
+        homePage.value = runCatching { extensionManager.home() }
+            .onFailure { reportException(it) }
+            .getOrElse { HomePage(chips = null, sections = emptyList()) }
+        allYtItems.value = homePage.value?.sections?.flatMap { it.items }.orEmpty()
     }
 
     private suspend fun load() {
@@ -578,65 +554,11 @@ class HomeViewModel @Inject constructor(
 
     private val _isLoadingMore = MutableStateFlow(false)
     fun loadMoreYouTubeItems(continuation: String?) {
-        if (continuation == null || _isLoadingMore.value) return
-        val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-        val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
-        val hideYoutubeShorts = context.dataStore.get(HideYoutubeShortsKey, false)
-
-        viewModelScope.launch(Dispatchers.IO) {
-            _isLoadingMore.value = true
-            var currentContinuation = continuation
-            var hasNewItems = false
-
-            while (currentContinuation != null && !hasNewItems) {
-                val nextSections = YouTube.home(currentContinuation).getOrNull() ?: break
-                currentContinuation = nextSections.continuation
-
-                val newSections = nextSections.sections.mapNotNull { section ->
-                    val filteredItems = section.items.filterExplicit(hideExplicit).filterVideoSongs(hideVideoSongs).filterYoutubeShorts(hideYoutubeShorts)
-                    if (filteredItems.isEmpty()) null else section.copy(items = filteredItems)
-                }
-
-                if (newSections.isNotEmpty()) {
-                    hasNewItems = true
-                }
-
-                homePage.value = nextSections.copy(
-                    chips = homePage.value?.chips,
-                    continuation = currentContinuation,
-                    sections = homePage.value?.sections.orEmpty() + newSections
-                )
-            }
-            _isLoadingMore.value = false
-        }
+        // Extension feeds own pagination. The classic screen currently renders the first feed page.
     }
 
     fun toggleChip(chip: HomePage.Chip?) {
-        if (chip == null || chip == selectedChip.value && previousHomePage.value != null) {
-            homePage.value = previousHomePage.value
-            previousHomePage.value = null
-            selectedChip.value = null
-            return
-        }
-
-        if (selectedChip.value == null) {
-            previousHomePage.value = homePage.value
-        }
-
-        viewModelScope.launch(Dispatchers.IO) {
-            val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-            val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
-            val hideYoutubeShorts = context.dataStore.get(HideYoutubeShortsKey, false)
-            val nextSections = YouTube.home(params = chip.endpoint?.params).getOrNull() ?: return@launch
-
-            homePage.value = nextSections.copy(
-                chips = homePage.value?.chips,
-                sections = nextSections.sections.map { section ->
-                    section.copy(items = section.items.filterExplicit(hideExplicit).filterVideoSongs(hideVideoSongs).filterYoutubeShorts(hideYoutubeShorts))
-                }
-            )
-            selectedChip.value = chip
-        }
+        selectedChip.value = null
     }
 
     private suspend fun loadAccountPlaylists() {

@@ -1,8 +1,11 @@
 package iad1tya.echo.music.extensions.nightly
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
@@ -11,10 +14,13 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import com.music.innertube.models.Artist
 import com.music.innertube.models.SongItem
+import com.music.innertube.pages.HomePage
 import com.music.innertube.pages.SearchSummary
 import com.music.innertube.pages.SearchSummaryPage
 import dalvik.system.DexClassLoader
 import dev.brahmkshatriya.echo.common.clients.ExtensionClient
+import dev.brahmkshatriya.echo.common.clients.HomeFeedClient
+import dev.brahmkshatriya.echo.common.clients.LoginClient
 import dev.brahmkshatriya.echo.common.clients.SearchFeedClient
 import dev.brahmkshatriya.echo.common.clients.SettingsChangeListenerClient
 import dev.brahmkshatriya.echo.common.clients.TrackClient
@@ -22,16 +28,23 @@ import dev.brahmkshatriya.echo.common.models.ExtensionType
 import dev.brahmkshatriya.echo.common.models.ImageHolder
 import dev.brahmkshatriya.echo.common.models.ImportType
 import dev.brahmkshatriya.echo.common.models.Metadata
+import dev.brahmkshatriya.echo.common.models.Message
+import dev.brahmkshatriya.echo.common.models.NetworkConnection
 import dev.brahmkshatriya.echo.common.models.Shelf
 import dev.brahmkshatriya.echo.common.models.Streamable
 import dev.brahmkshatriya.echo.common.models.Track
+import dev.brahmkshatriya.echo.common.models.User
 import dev.brahmkshatriya.echo.common.providers.GlobalSettingsProvider
+import dev.brahmkshatriya.echo.common.providers.MessageFlowProvider
 import dev.brahmkshatriya.echo.common.providers.MetadataProvider
+import dev.brahmkshatriya.echo.common.providers.NetworkConnectionProvider
+import dev.brahmkshatriya.echo.common.providers.WebViewClientProvider
 import dev.brahmkshatriya.echo.common.settings.Setting
 import dev.brahmkshatriya.echo.common.settings.Settings
 import iad1tya.echo.music.extensions.toMediaItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -98,6 +111,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     private val mutex = Mutex()
     private val resolvedStreams = ConcurrentHashMap<String, CachedResolvedStream>()
     private val classicTrackMappings = ConcurrentHashMap<String, String>()
+    val messages = MutableSharedFlow<Message>(extraBufferCapacity = 16)
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -112,6 +126,9 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     )
     val selectedMusicExtensionId: StateFlow<String?> = _selectedMusicExtensionId.asStateFlow()
 
+    private val _loginUsers = MutableStateFlow<Map<String, User?>>(emptyMap())
+    val loginUsers: StateFlow<Map<String, User?>> = _loginUsers.asStateFlow()
+
     @Volatile
     private var loaded = false
 
@@ -125,6 +142,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
                 .sortedBy { it.name.lowercase(Locale.ROOT) }
                 .map(::loadEntry)
             _entries.value = parsed
+            _loginUsers.value = parsed.associate { it.id to storedUser(it.id) }
             loaded = true
 
             val selected = _selectedMusicExtensionId.value
@@ -162,8 +180,11 @@ class ClassicExtensionManager private constructor(private val context: Context) 
                 staging.copyTo(destination, overwrite = true)
                 destination.setReadable(true, true)
                 reload()
-                _entries.value.first { it.id == metadata.id }.metadata
-                    ?: error("Installed extension could not be loaded")
+                val entry = _entries.value.first { it.id == metadata.id }
+                entry.client ?: error(
+                    "Installed ${metadata.name} could not be loaded: ${entry.error ?: "unknown loader error"}"
+                )
+                entry.metadata ?: error("Installed extension metadata is unavailable")
             } finally {
                 staging.delete()
             }
@@ -218,6 +239,32 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         }
     }
 
+    fun clientFor(id: String): ExtensionClient? = _entries.value.firstOrNull { it.id == id }?.client
+
+    fun launchLogin(id: String) {
+        val entry = _entries.value.firstOrNull { it.id == id && it.client is LoginClient }
+            ?: error("${_entries.value.firstOrNull { it.id == id }?.metadata?.name ?: id} does not provide login")
+        context.startActivity(
+            Intent(context, ClassicExtensionLoginActivity::class.java)
+                .putExtra(ClassicExtensionLoginActivity.EXTRA_EXTENSION_ID, entry.id)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
+
+    suspend fun saveLoginUsers(id: String, users: List<User>) = withContext(Dispatchers.IO) {
+        val client = clientFor(id) as? LoginClient ?: error("Extension does not provide login")
+        val user = users.firstOrNull() ?: error("No account was returned by the extension")
+        preferences.edit().putString(userKey(id), json.encodeToString(user)).apply()
+        client.setLoginUser(user)
+        _loginUsers.value = _loginUsers.value + (id to user)
+    }
+
+    suspend fun logout(id: String) = withContext(Dispatchers.IO) {
+        preferences.edit().remove(userKey(id)).apply()
+        (clientFor(id) as? LoginClient)?.setLoginUser(null)
+        _loginUsers.value = _loginUsers.value + (id to null)
+    }
+
     suspend fun search(query: String): SearchSummaryPage = withContext(Dispatchers.IO) {
         ensureLoaded()
         val entry = selectedEntry() ?: return@withContext SearchSummaryPage(emptyList())
@@ -232,6 +279,30 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             if (items.isEmpty()) null else SearchSummary(shelf.title, items)
         }
         SearchSummaryPage(summaries)
+    }
+
+    suspend fun home(): HomePage = withContext(Dispatchers.IO) {
+        ensureLoaded()
+        val entry = selectedEntry() ?: error("Select a music extension in Settings → Extensions")
+        val client = entry.client as? HomeFeedClient
+            ?: error("${entry.metadata?.name ?: entry.id} does not provide a home feed")
+        val feed = client.loadHomeFeed()
+        val data = feed.getPagedData(feed.notSortTabs.firstOrNull())
+        val shelves = data.pagedData.loadPage(null).data
+        HomePage(
+            chips = null,
+            sections = shelves.mapNotNull { shelf ->
+                val items = shelf.tracks().map { it.toClassicSong(entry.id) }
+                if (items.isEmpty()) null else HomePage.Section(
+                    title = shelf.title,
+                    label = (shelf as? Shelf.Lists<*>)?.subtitle,
+                    thumbnail = null,
+                    endpoint = null,
+                    items = items,
+                )
+            },
+            continuation = null,
+        )
     }
 
     suspend fun resolve(mediaId: String): ResolvedStream = withContext(Dispatchers.IO) {
@@ -333,8 +404,10 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         }.apply()
     }
 
-    private fun loadEntry(file: File): Entry = runCatching {
-        val metadata = parseMetadata(file)
+    private fun loadEntry(file: File): Entry {
+        var parsedMetadata: Metadata? = null
+        return runCatching {
+        val metadata = parseMetadata(file).also { parsedMetadata = it }
         val classLoader = ExtensionDexLoader(metadata, context)
         val client = classLoader.loadClass(metadata.className)
             .getDeclaredConstructor()
@@ -345,10 +418,34 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         if (client is GlobalSettingsProvider) client.setGlobalSettings(
             PreferenceSettings(context.getSharedPreferences("classic_extension_global", Context.MODE_PRIVATE))
         )
+        if (client is MessageFlowProvider) client.setMessageFlow(messages)
+        if (client is NetworkConnectionProvider) client.setNetworkConnection(currentNetworkConnection())
+        if (client is WebViewClientProvider) {
+            client.setWebViewClient(ClassicExtensionWebViewBroker.client(context, metadata))
+        }
+        if (client is LoginClient) client.setLoginUser(storedUser(metadata.id))
         kotlinx.coroutines.runBlocking { client.onInitialize() }
         Entry(file, metadata, client)
     }.getOrElse { error ->
-        Entry(file, null, null, error.message ?: error.javaClass.simpleName)
+        val detail = generateSequence(error) { it.cause }
+            .joinToString(" → ") { it.message ?: it.javaClass.simpleName }
+        Entry(file, parsedMetadata, null, detail)
+    }
+    }
+
+    private fun storedUser(id: String): User? = preferences.getString(userKey(id), null)?.let {
+        runCatching { json.decodeFromString<User>(it) }.getOrNull()
+    }
+
+    private fun currentNetworkConnection(): NetworkConnection {
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        val capabilities = manager.getNetworkCapabilities(manager.activeNetwork)
+            ?: return NetworkConnection.NotConnected
+        return if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) {
+            NetworkConnection.Unmetered
+        } else {
+            NetworkConnection.Metered
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -484,6 +581,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         fun isExtensionMediaId(mediaId: String): Boolean = mediaId.startsWith(MEDIA_PREFIX)
 
         private fun enabledKey(id: String) = "enabled_$id"
+        private fun userKey(id: String) = "user_$id"
 
         private fun mediaId(extensionId: String, trackId: String): String {
             val encoded = Base64.encodeToString(

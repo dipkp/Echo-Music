@@ -3024,6 +3024,12 @@ class MusicService :
                     .build()
             }
 
+            throw PlaybackException(
+                "Select a music extension in Settings → Extensions",
+                null,
+                PlaybackException.ERROR_CODE_REMOTE_ERROR,
+            )
+
             Timber.tag("MusicService").i("FETCHING STREAM: $mediaId | quality=$lockedQuality")
             val playbackData = runBlocking(Dispatchers.IO) {
                 val dbSong = database.song(mediaId).firstOrNull()
@@ -3212,19 +3218,7 @@ class MusicService :
             }
         }
 
-        if (playbackStats.totalPlayTimeMs >= historyDurationMs) {
-            CoroutineScope(Dispatchers.IO).launch {
-                val playbackUrl = database.format(mediaItem.mediaId).first()?.playbackUrl
-                    ?: YTPlayerUtils.playerResponseForMetadata(mediaItem.mediaId, null)
-                        .getOrNull()?.playbackTracking?.videostatsPlaybackUrl?.baseUrl
-                playbackUrl?.let {
-                    YouTube.registerPlayback(null, playbackUrl)
-                        .onFailure {
-                            reportException(it)
-                        }
-                }
-            }
-        }
+        // Online playback/reporting is owned by the selected extension backend.
     }
 
     private fun saveQueueToDisk() {

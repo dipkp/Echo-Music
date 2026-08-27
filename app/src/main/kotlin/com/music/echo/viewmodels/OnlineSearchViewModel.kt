@@ -51,6 +51,11 @@ constructor(
         viewModelScope.launch {
             filter.collect { filter ->
                 extensionManager.ensureLoaded()
+                if (extensionManager.selectedMusicExtensionId.value == null) {
+                    if (filter == null) summaryPage = SearchSummaryPage(emptyList())
+                    else viewStateMap[filter.value] = ItemsPage(emptyList(), null)
+                    return@collect
+                }
                 if (extensionManager.selectedMusicExtensionId.value != null) {
                     runCatching {
                         val extensionResults = extensionManager.search(query)
@@ -120,30 +125,6 @@ constructor(
     }
 
     fun loadMore() {
-        if (extensionManager.selectedMusicExtensionId.value != null) return
-        val filter = filter.value?.value
-        viewModelScope.launch {
-            if (filter == null) return@launch
-            val viewState = viewStateMap[filter] ?: return@launch
-            val continuation = viewState.continuation
-            if (continuation != null) {
-                val searchResult =
-                    YouTube.searchContinuation(continuation).getOrNull() ?: return@launch
-                val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-                val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
-                val hideYoutubeShorts = context.dataStore.get(HideYoutubeShortsKey, false)
-                val newItems = searchResult.items
-                    .filterExplicit(hideExplicit)
-                    .let { items ->
-                        if (filter == YouTube.SearchFilter.FILTER_VIDEO.value) items
-                        else items.filterVideoSongs(hideVideoSongs)
-                    }
-                    .filterYoutubeShorts(hideYoutubeShorts)
-                viewStateMap[filter] = ItemsPage(
-                    (viewState.items + newItems).distinctBy { it.id },
-                    searchResult.continuation
-                )
-            }
-        }
+        // Extension search owns pagination; classic search renders its returned page.
     }
 }

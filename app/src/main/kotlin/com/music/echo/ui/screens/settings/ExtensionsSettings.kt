@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,6 +41,7 @@ import androidx.navigation.NavController
 import iad1tya.echo.music.LocalPlayerAwareWindowInsets
 import iad1tya.echo.music.R
 import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
+import dev.brahmkshatriya.echo.common.clients.LoginClient
 import iad1tya.echo.music.ui.component.IconButton
 import iad1tya.echo.music.ui.component.Material3SettingsGroup
 import iad1tya.echo.music.ui.component.Material3SettingsItem
@@ -56,11 +58,18 @@ fun ExtensionsSettings(
     val manager = remember(context) { ClassicExtensionManager.get(context) }
     val entries by manager.entries.collectAsState()
     val selectedId by manager.selectedMusicExtensionId.collectAsState()
+    val loginUsers by manager.loginUsers.collectAsState()
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
 
     LaunchedEffect(manager) {
         manager.reload()
+    }
+
+    LaunchedEffect(manager) {
+        manager.messages.collect {
+            Toast.makeText(context, it.message, Toast.LENGTH_LONG).show()
+        }
     }
 
     val installer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -158,6 +167,7 @@ fun ExtensionsSettings(
                                     append(metadata?.author ?: "Unknown author")
                                     metadata?.version?.let { append(" • ").append(it) }
                                     if (selectable && selectedId == entry.id) append(" • Active")
+                                    loginUsers[entry.id]?.let { append(" • Signed in as ").append(it.name) }
                                     if (!entry.isMusic && metadata != null) {
                                         append(" • ").append(metadata.type.name.lowercase())
                                     }
@@ -166,6 +176,30 @@ fun ExtensionsSettings(
                         },
                         trailingContent = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (entry.client is LoginClient) {
+                                    IconButton(
+                                        onClick = {
+                                            runCatching { manager.launchLogin(entry.id) }.onFailure {
+                                                Toast.makeText(
+                                                    context,
+                                                    it.message ?: "Could not open extension login",
+                                                    Toast.LENGTH_LONG,
+                                                ).show()
+                                            }
+                                        },
+                                        onLongClick = {
+                                            scope.launch {
+                                                manager.logout(entry.id)
+                                                Toast.makeText(context, "Account disconnected", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.AccountCircle,
+                                            contentDescription = "Extension account",
+                                        )
+                                    }
+                                }
                                 if (selectable) {
                                     RadioButton(
                                         selected = selectedId == entry.id,
