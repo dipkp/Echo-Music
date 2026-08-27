@@ -2,6 +2,7 @@
 
 package iad1tya.echo.music.ui.screens.search
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -52,6 +53,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
@@ -97,6 +99,7 @@ import iad1tya.echo.music.ui.menu.YouTubeArtistMenu
 import iad1tya.echo.music.ui.menu.YouTubePlaylistMenu
 import iad1tya.echo.music.ui.menu.YouTubeSongMenu
 import iad1tya.echo.music.utils.listItemShape
+import iad1tya.echo.music.utils.reportException
 import iad1tya.echo.music.utils.rememberPreference
 import iad1tya.echo.music.viewmodels.OnlineSearchViewModel
 import kotlinx.coroutines.Dispatchers
@@ -115,6 +118,7 @@ fun OnlineSearchResult(
     val menuState = LocalMenuState.current
     val playerConnection = LocalPlayerConnection.current ?: return
     val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
     val isPlaying by playerConnection.isEffectivelyPlaying.collectAsState()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
 
@@ -265,9 +269,23 @@ fun OnlineSearchResult(
                                 if (item.id == mediaMetadata?.id) {
                                     playerConnection.togglePlayPause()
                                 } else if (isExtensionItem) {
-                                    playerConnection.playQueue(
-                                        ListQueue(items = listOf(item.toMediaItem()))
-                                    )
+                                    coroutineScope.launch {
+                                        runCatching {
+                                            ClassicExtensionManager.get(context)
+                                                .prepareMediaItem(item)
+                                        }.onSuccess { mediaItem ->
+                                            playerConnection.playQueue(
+                                                ListQueue(items = listOf(mediaItem))
+                                            )
+                                        }.onFailure { error ->
+                                            reportException(error)
+                                            Toast.makeText(
+                                                context,
+                                                error.message ?: "Extension could not play this song",
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                        }
+                                    }
                                 } else {
                                     playerConnection.playQueue(
                                         YouTubeQueue(

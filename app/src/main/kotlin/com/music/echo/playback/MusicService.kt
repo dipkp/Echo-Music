@@ -156,6 +156,7 @@ import iad1tya.echo.music.extensions.toMediaItem
 import iad1tya.echo.music.extensions.toPersistQueue
 import iad1tya.echo.music.extensions.toQueue
 import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionDataSource
 import iad1tya.echo.music.echomusic.updater.downloadmanager.EchoNotificationProvider
 import iad1tya.echo.music.lyrics.LyricsHelper
 import iad1tya.echo.music.models.PersistPlayerState
@@ -2901,7 +2902,9 @@ class MusicService :
 
     private fun createDataSourceFactory(): DataSource.Factory {
         return ResolvingDataSource.Factory(
-            DefaultDataSource.Factory(this, createCacheDataSource())
+            ClassicExtensionDataSource.Factory(
+                DefaultDataSource.Factory(this, createCacheDataSource())
+            )
         ) { dataSpec ->
             val mediaId = dataSpec.key ?: error("No media id")
             if (mediaId.isLocalMediaId()) {
@@ -2918,9 +2921,18 @@ class MusicService :
                 val resolved = runBlocking(Dispatchers.IO) {
                     ClassicExtensionManager.get(this@MusicService).resolve(mediaId)
                 }
+                val isLegacySeedUri = dataSpec.uri.host == "music.youtube.com" &&
+                    dataSpec.uri.getQueryParameter("v") == mediaId
+                val playbackUri = if (dataSpec.uri == resolved.uri || isLegacySeedUri) {
+                    resolved.uri
+                } else {
+                    // HLS/DASH child requests must retain their segment URI.
+                    dataSpec.uri
+                }
                 return@Factory dataSpec.buildUpon()
-                    .setUri(resolved.url.toUri())
+                    .setUri(playbackUri)
                     .setHttpRequestHeaders(resolved.headers)
+                    .setCustomData(resolved.source)
                     .build()
             }
 

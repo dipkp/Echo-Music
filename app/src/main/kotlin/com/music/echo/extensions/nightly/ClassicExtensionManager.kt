@@ -5,7 +5,10 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.util.Base64
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import com.music.innertube.models.Artist
 import com.music.innertube.models.SongItem
 import com.music.innertube.pages.SearchSummary
@@ -26,6 +29,7 @@ import dev.brahmkshatriya.echo.common.providers.GlobalSettingsProvider
 import dev.brahmkshatriya.echo.common.providers.MetadataProvider
 import dev.brahmkshatriya.echo.common.settings.Setting
 import dev.brahmkshatriya.echo.common.settings.Settings
+import iad1tya.echo.music.extensions.toMediaItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +45,7 @@ import java.io.FileOutputStream
 import java.lang.ref.WeakReference
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipFile
 
 /**
@@ -61,16 +66,37 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         val isMusic: Boolean get() = metadata?.type == ExtensionType.MUSIC
     }
 
-    data class ResolvedStream(
-        val url: String,
-        val headers: Map<String, String>,
-        val type: Streamable.SourceType,
+    data class ResolvedStream(val source: Streamable.Source) {
+        val uri: Uri
+            get() = when (source) {
+                is Streamable.Source.Http -> Uri.parse(source.request.url)
+                is Streamable.Source.Raw -> Uri.Builder()
+                    .scheme("echo-raw")
+                    .authority(source.id.hashCode().toUInt().toString(16))
+                    .build()
+            }
+
+        val headers: Map<String, String>
+            get() = (source as? Streamable.Source.Http)?.request?.headers.orEmpty()
+
+        val mimeType: String?
+            get() = when ((source as? Streamable.Source.Http)?.type) {
+                Streamable.SourceType.HLS -> MimeTypes.APPLICATION_M3U8
+                Streamable.SourceType.DASH -> MimeTypes.APPLICATION_MPD
+                else -> null
+            }
+    }
+
+    private data class CachedResolvedStream(
+        val stream: ResolvedStream,
+        val createdAt: Long,
     )
 
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val tracks = context.getSharedPreferences(TRACKS, Context.MODE_PRIVATE)
     private val extensionDirectory = File(context.filesDir, "extensions").apply { mkdirs() }
     private val mutex = Mutex()
+    private val resolvedStreams = ConcurrentHashMap<String, CachedResolvedStream>()
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -89,7 +115,8 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     private var loaded = false
 
     suspend fun reload() = withContext(Dispatchers.IO) {
-        mutex.withLock {
+        val selectedClient = mutex.withLock {
+            resolvedStreams.clear()
             val parsed = extensionDirectory.listFiles()
                 .orEmpty()
                 .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) }
@@ -108,7 +135,10 @@ class ClassicExtensionManager private constructor(private val context: Context) 
                 }?.id
                 setSelectedId(fallback)
             }
+            val activeId = _selectedMusicExtensionId.value
+            parsed.firstOrNull { it.id == activeId }?.client
         }
+        selectedClient?.onExtensionSelected()
     }
 
     suspend fun ensureLoaded() {
@@ -203,6 +233,9 @@ class ClassicExtensionManager private constructor(private val context: Context) 
 
     suspend fun resolve(mediaId: String): ResolvedStream = withContext(Dispatchers.IO) {
         require(isExtensionMediaId(mediaId)) { "Not an extension media id" }
+        resolvedStreams[mediaId]?.takeIf {
+            SystemClock.elapsedRealtime() - it.createdAt < RESOLVED_STREAM_TTL_MS
+        }?.stream?.let { return@withContext it }
         ensureLoaded()
         val extensionId = extensionIdFrom(mediaId)
         val entry = _entries.value.firstOrNull {
@@ -222,16 +255,24 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         val media = client.loadStreamableMedia(streamable, false)
         val server = media as? Streamable.Media.Server
             ?: error("The extension returned non-server media")
-        val source = server.sources
-            .filterIsInstance<Streamable.Source.Http>()
-            .filter { !it.isVideo }
-            .maxByOrNull { it.quality }
-            ?: server.sources.filterIsInstance<Streamable.Source.Http>().maxByOrNull { it.quality }
-            ?: error("Raw extension streams are not supported by the classic HTTP player")
-        check(source.request.method == dev.brahmkshatriya.echo.common.models.NetworkRequest.Method.GET) {
-            "Only GET playback streams are supported"
+        val source = server.sources.filter { !it.isVideo }.maxByOrNull { it.quality }
+            ?: server.sources.maxByOrNull { it.quality }
+            ?: error("The extension returned no playable source")
+        if (source is Streamable.Source.Http) {
+            check(source.request.method == dev.brahmkshatriya.echo.common.models.NetworkRequest.Method.GET) {
+                "Only GET playback streams are supported"
+            }
         }
-        ResolvedStream(source.request.url, source.request.headers, source.type)
+        ResolvedStream(source).also {
+            resolvedStreams[mediaId] = CachedResolvedStream(it, SystemClock.elapsedRealtime())
+        }
+    }
+
+    suspend fun prepareMediaItem(item: SongItem): MediaItem {
+        val resolved = resolve(item.id)
+        val builder = item.toMediaItem().buildUpon().setUri(resolved.uri)
+        resolved.mimeType?.let(builder::setMimeType)
+        return builder.build()
     }
 
     private fun selectedEntry(): Entry? {
@@ -386,6 +427,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         private const val SELECTED_MUSIC_EXTENSION = "selected_music_extension"
         private const val EXTENSION_FEATURE_PREFIX = "dev.brahmkshatriya.echo."
         private const val MEDIA_PREFIX = "echoext:"
+        private const val RESOLVED_STREAM_TTL_MS = 5 * 60 * 1000L
 
         @Volatile
         private var instance: ClassicExtensionManager? = null

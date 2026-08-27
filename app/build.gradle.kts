@@ -127,7 +127,8 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
             storePassword = "android"
-            storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+            storeFile = System.getenv("ECHO_DEBUG_KEYSTORE")?.let(::file)
+                ?: file("${System.getProperty("user.home")}/.android/debug.keystore")
         }
     }
 
@@ -293,6 +294,7 @@ dependencies {
     implementation(libs.media3)
     implementation(libs.media3.session)
     implementation(libs.media3.hls)
+    implementation(libs.media3.dash)
     implementation(libs.media3.ui)
     implementation(libs.media3.okhttp)
 
