@@ -140,6 +140,8 @@ tinypinyin = { module = "com.github.promeG:tinypinyin", version.ref = "tinypinyi
 
 protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobuf" }
 protobuf-kotlin-lite = { module = "com.google.protobuf:protobuf-kotlin-lite", version.ref = "protobuf" }
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+protobuf-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf" }
 smoothCorner = { module = "com.github.racra:smooth-corner-rect-android-compose", version.ref = "smoothCorner" }
 lottie-compose = { module = "com.airbnb.android:lottie-compose", version.ref = "lottie" }
 work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }

@@ -18,12 +18,20 @@ import com.music.innertube.pages.HomePage
 import com.music.innertube.pages.SearchSummary
 import com.music.innertube.pages.SearchSummaryPage
 import dalvik.system.DexClassLoader
+import dev.brahmkshatriya.echo.common.Extension
+import dev.brahmkshatriya.echo.common.LyricsExtension
+import dev.brahmkshatriya.echo.common.MiscExtension
+import dev.brahmkshatriya.echo.common.MusicExtension
+import dev.brahmkshatriya.echo.common.TrackerExtension
 import dev.brahmkshatriya.echo.common.clients.ExtensionClient
 import dev.brahmkshatriya.echo.common.clients.HomeFeedClient
 import dev.brahmkshatriya.echo.common.clients.LoginClient
 import dev.brahmkshatriya.echo.common.clients.SearchFeedClient
 import dev.brahmkshatriya.echo.common.clients.SettingsChangeListenerClient
 import dev.brahmkshatriya.echo.common.clients.TrackClient
+import dev.brahmkshatriya.echo.common.clients.TrackerClient
+import dev.brahmkshatriya.echo.common.clients.LyricsClient
+import dev.brahmkshatriya.echo.common.helpers.Injectable
 import dev.brahmkshatriya.echo.common.models.ExtensionType
 import dev.brahmkshatriya.echo.common.models.ImageHolder
 import dev.brahmkshatriya.echo.common.models.ImportType
@@ -37,7 +45,11 @@ import dev.brahmkshatriya.echo.common.models.User
 import dev.brahmkshatriya.echo.common.providers.GlobalSettingsProvider
 import dev.brahmkshatriya.echo.common.providers.MessageFlowProvider
 import dev.brahmkshatriya.echo.common.providers.MetadataProvider
+import dev.brahmkshatriya.echo.common.providers.MiscExtensionsProvider
+import dev.brahmkshatriya.echo.common.providers.MusicExtensionsProvider
 import dev.brahmkshatriya.echo.common.providers.NetworkConnectionProvider
+import dev.brahmkshatriya.echo.common.providers.LyricsExtensionsProvider
+import dev.brahmkshatriya.echo.common.providers.TrackerExtensionsProvider
 import dev.brahmkshatriya.echo.common.providers.WebViewClientProvider
 import dev.brahmkshatriya.echo.common.settings.Setting
 import dev.brahmkshatriya.echo.common.settings.Settings
@@ -105,6 +117,20 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         val createdAt: Long,
     )
 
+    private data class RuntimeSpec(
+        val file: File,
+        val metadata: Metadata,
+        val injectable: Injectable<ExtensionClient>,
+    )
+
+    /** The same four typed extension collections exposed by Echo Nightly's loader. */
+    private data class RuntimeCatalog(
+        val music: List<MusicExtension>,
+        val tracker: List<TrackerExtension>,
+        val lyrics: List<LyricsExtension>,
+        val misc: List<MiscExtension>,
+    )
+
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val tracks = context.getSharedPreferences(TRACKS, Context.MODE_PRIVATE)
     private val extensionDirectory = File(context.filesDir, "extensions").apply { mkdirs() }
@@ -132,15 +158,39 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     @Volatile
     private var loaded = false
 
+    @Volatile
+    private var catalog = RuntimeCatalog(emptyList(), emptyList(), emptyList(), emptyList())
+
     suspend fun reload() = withContext(Dispatchers.IO) {
         val selectedClient = mutex.withLock {
             resolvedStreams.clear()
             classicTrackMappings.clear()
-            val parsed = extensionDirectory.listFiles()
+            val sourceFiles = extensionDirectory.listFiles()
                 .orEmpty()
                 .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) }
                 .sortedBy { it.name.lowercase(Locale.ROOT) }
-                .map(::loadEntry)
+            val specs = sourceFiles.map { file ->
+                file to runCatching { createRuntimeSpec(file) }
+            }
+            val newCatalog = createCatalog(specs.mapNotNull { it.second.getOrNull() })
+            catalog = newCatalog
+
+            // Nightly injects the complete typed extension graph before a client is used.
+            // This is required by aggregator, downloader, tracker and lyrics extensions.
+            specs.mapNotNull { it.second.getOrNull() }.forEach { spec ->
+                if (isEnabled(spec.metadata.id)) {
+                    spec.injectable.injectOrRun("providers") {
+                        injectProviders(this, newCatalog)
+                    }
+                }
+            }
+
+            val parsed = specs.map { (file, result) ->
+                result.fold(
+                    onSuccess = { loadEntry(it) },
+                    onFailure = { Entry(file, null, null, it.fullMessage()) },
+                )
+            }
             _entries.value = parsed
             _loginUsers.value = parsed.associate { it.id to storedUser(it.id) }
             loaded = true
@@ -219,6 +269,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             it.id == id && it.isMusic && it.client != null && isEnabled(it.id)
         } ?: error("Music extension is unavailable: $id")
         setSelectedId(entry.id)
+        refreshNetworkState()
         entry.client?.onExtensionSelected()
     }
 
@@ -267,6 +318,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
 
     suspend fun search(query: String): SearchSummaryPage = withContext(Dispatchers.IO) {
         ensureLoaded()
+        refreshNetworkState()
         val entry = selectedEntry() ?: return@withContext SearchSummaryPage(emptyList())
         val searchClient = entry.client as? SearchFeedClient
             ?: error("${entry.metadata?.name ?: entry.id} does not provide search")
@@ -283,6 +335,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
 
     suspend fun home(): HomePage = withContext(Dispatchers.IO) {
         ensureLoaded()
+        refreshNetworkState()
         val entry = selectedEntry() ?: error("Select a music extension in Settings → Extensions")
         val client = entry.client as? HomeFeedClient
             ?: error("${entry.metadata?.name ?: entry.id} does not provide a home feed")
@@ -311,6 +364,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             SystemClock.elapsedRealtime() - it.createdAt < RESOLVED_STREAM_TTL_MS
         }?.stream?.let { return@withContext it }
         ensureLoaded()
+        refreshNetworkState()
         val extensionId = extensionIdFrom(mediaId)
         val entry = _entries.value.firstOrNull {
             it.id == extensionId && it.client != null && isEnabled(it.id)
@@ -404,33 +458,109 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         }.apply()
     }
 
-    private fun loadEntry(file: File): Entry {
-        var parsedMetadata: Metadata? = null
-        return runCatching {
-        val metadata = parseMetadata(file).also { parsedMetadata = it }
-        val classLoader = ExtensionDexLoader(metadata, context)
-        val client = classLoader.loadClass(metadata.className)
-            .getDeclaredConstructor()
-            .newInstance() as ExtensionClient
-        val extensionSettings = valuesFor(metadata.id)
-        client.setSettings(extensionSettings)
-        if (client is MetadataProvider) client.setMetadata(metadata)
-        if (client is GlobalSettingsProvider) client.setGlobalSettings(
-            PreferenceSettings(context.getSharedPreferences("classic_extension_global", Context.MODE_PRIVATE))
+    private fun createRuntimeSpec(file: File): RuntimeSpec {
+        val metadata = parseMetadata(file)
+        val injectable = Injectable(
+            getter = {
+                val classLoader = ExtensionDexLoader(metadata, context)
+                classLoader.loadClass(metadata.className)
+                    .getDeclaredConstructor()
+                    .newInstance() as ExtensionClient
+            },
+            injections = mutableListOf({
+                setSettings(valuesFor(metadata.id))
+                if (this is MetadataProvider) setMetadata(metadata)
+                if (this is GlobalSettingsProvider) setGlobalSettings(
+                    PreferenceSettings(
+                        context.getSharedPreferences(
+                            "classic_extension_global",
+                            Context.MODE_PRIVATE,
+                        )
+                    )
+                )
+                if (this is MessageFlowProvider) setMessageFlow(messages)
+                if (this is NetworkConnectionProvider) {
+                    setNetworkConnection(currentNetworkConnection())
+                }
+                if (this is WebViewClientProvider) {
+                    setWebViewClient(ClassicExtensionWebViewBroker.client(context, metadata))
+                }
+                if (this is LoginClient) setLoginUser(storedUser(metadata.id))
+                onInitialize()
+                // Echo Nightly invokes this during initial injection as well as when the
+                // user explicitly selects an extension.
+                onExtensionSelected()
+            }),
         )
-        if (client is MessageFlowProvider) client.setMessageFlow(messages)
-        if (client is NetworkConnectionProvider) client.setNetworkConnection(currentNetworkConnection())
-        if (client is WebViewClientProvider) {
-            client.setWebViewClient(ClassicExtensionWebViewBroker.client(context, metadata))
-        }
-        if (client is LoginClient) client.setLoginUser(storedUser(metadata.id))
-        kotlinx.coroutines.runBlocking { client.onInitialize() }
-        Entry(file, metadata, client)
-    }.getOrElse { error ->
-        val detail = generateSequence(error) { it.cause }
-            .joinToString(" → ") { it.message ?: it.javaClass.simpleName }
-        Entry(file, parsedMetadata, null, detail)
+        return RuntimeSpec(file, metadata, injectable)
     }
+
+    private fun createCatalog(specs: List<RuntimeSpec>): RuntimeCatalog = RuntimeCatalog(
+        music = specs.filter { it.metadata.type == ExtensionType.MUSIC }
+            .map { MusicExtension(it.metadata.withEnabledState(), it.injectable) },
+        tracker = specs.filter { it.metadata.type == ExtensionType.TRACKER }
+            .map { TrackerExtension(it.metadata.withEnabledState(), it.injectable.casted<TrackerClient>()) },
+        lyrics = specs.filter { it.metadata.type == ExtensionType.LYRICS }
+            .map { LyricsExtension(it.metadata.withEnabledState(), it.injectable.casted<LyricsClient>()) },
+        misc = specs.filter { it.metadata.type == ExtensionType.MISC }
+            .map { MiscExtension(it.metadata.withEnabledState(), it.injectable) },
+    )
+
+    private suspend fun loadEntry(spec: RuntimeSpec): Entry = spec.injectable.value().fold(
+        onSuccess = { Entry(spec.file, spec.metadata.withEnabledState(), it) },
+        onFailure = { Entry(spec.file, spec.metadata.withEnabledState(), null, it.fullMessage()) },
+    )
+
+    private fun Metadata.withEnabledState() = copy(isEnabled = isEnabled(id))
+
+    private fun Throwable.fullMessage(): String = generateSequence(this) { it.cause }
+        .joinToString(" → ") { error ->
+            val name = error.javaClass.simpleName
+            error.message?.takeIf(String::isNotBlank)?.let { "$name: $it" } ?: name
+        }
+
+    private fun injectProviders(client: ExtensionClient, runtime: RuntimeCatalog) {
+        if (client is MusicExtensionsProvider) {
+            client.setMusicExtensions(requiredExtensions(
+                "music", client.requiredMusicExtensions, runtime.music
+            ))
+        }
+        if (client is TrackerExtensionsProvider) {
+            client.setTrackerExtensions(requiredExtensions(
+                "tracker", client.requiredTrackerExtensions, runtime.tracker
+            ))
+        }
+        if (client is LyricsExtensionsProvider) {
+            client.setLyricsExtensions(requiredExtensions(
+                "lyrics", client.requiredLyricsExtensions, runtime.lyrics
+            ))
+        }
+        if (client is MiscExtensionsProvider) {
+            client.setMiscExtensions(requiredExtensions(
+                "misc", client.requiredMiscExtensions, runtime.misc
+            ))
+        }
+    }
+
+    private fun <T : Extension<*>> requiredExtensions(
+        type: String,
+        required: List<String>,
+        available: List<T>,
+    ): List<T> {
+        if (required.isEmpty()) return available
+        val filtered = available.filter { it.id in required }
+        val missing = required.filterNot { id -> filtered.any { it.id == id } }
+        check(missing.isEmpty()) {
+            "Required $type extensions are missing: ${missing.joinToString()}"
+        }
+        return filtered
+    }
+
+    private fun refreshNetworkState() {
+        val connection = currentNetworkConnection()
+        _entries.value.forEach { entry ->
+            (entry.client as? NetworkConnectionProvider)?.setNetworkConnection(connection)
+        }
     }
 
     private fun storedUser(id: String): User? = preferences.getString(userKey(id), null)?.let {

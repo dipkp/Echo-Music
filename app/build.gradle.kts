@@ -339,8 +339,10 @@ dependencies {
     implementation(libs.ktor.serialization.json)
 
     // Protobuf for message serialization (lite version for Android)
-    implementation(libs.protobuf.javalite)
-    implementation(libs.protobuf.kotlin.lite)
+    // Keep the host runtime ABI aligned with Echo Nightly. The full artifacts also
+    // contain GeneratedMessageLite, so the classic app's lite-generated messages work.
+    implementation(libs.protobuf.java)
+    implementation(libs.protobuf.kotlin)
 
     coreLibraryDesugaring(libs.desugaring)
     implementation(libs.timber)
