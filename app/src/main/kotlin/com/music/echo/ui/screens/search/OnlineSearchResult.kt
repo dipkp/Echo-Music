@@ -81,7 +81,10 @@ import iad1tya.echo.music.constants.NavigationBarHeight
 import iad1tya.echo.music.constants.PauseSearchHistoryKey
 import iad1tya.echo.music.db.entities.SearchHistory
 import iad1tya.echo.music.models.toMediaMetadata
+import iad1tya.echo.music.extensions.toMediaItem
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
 import iad1tya.echo.music.playback.queues.YouTubeQueue
+import iad1tya.echo.music.playback.queues.ListQueue
 import iad1tya.echo.music.ui.component.ChipsRow
 import iad1tya.echo.music.ui.component.EmptyPlaceholder
 import iad1tya.echo.music.ui.component.LocalMenuState
@@ -194,9 +197,12 @@ fun OnlineSearchResult(
     }
 
     val ytItemContent: @Composable LazyItemScope.(YTItem, Int, Int) -> Unit = { item: YTItem, index: Int, size: Int ->
+        val isExtensionItem =
+            item is SongItem && ClassicExtensionManager.isExtensionMediaId(item.id)
         val longClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            menuState.show {
+            if (!isExtensionItem) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                menuState.show {
                 when (item) {
                     is SongItem ->
                         YouTubeSongMenu(
@@ -224,6 +230,7 @@ fun OnlineSearchResult(
                             coroutineScope = coroutineScope,
                             onDismiss = menuState::dismiss,
                         )
+                    }
                 }
             }
         }
@@ -238,13 +245,15 @@ fun OnlineSearchResult(
             isPlaying = isPlaying,
             shape = listItemShape(index, size),
             trailingContent = {
-                IconButton(
-                    onClick = longClick,
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.more_vert),
-                        contentDescription = null,
-                    )
+                if (!isExtensionItem) {
+                    IconButton(
+                        onClick = longClick,
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.more_vert),
+                            contentDescription = null,
+                        )
+                    }
                 }
             },
             modifier =
@@ -255,6 +264,10 @@ fun OnlineSearchResult(
                             is SongItem -> {
                                 if (item.id == mediaMetadata?.id) {
                                     playerConnection.togglePlayPause()
+                                } else if (isExtensionItem) {
+                                    playerConnection.playQueue(
+                                        ListQueue(items = listOf(item.toMediaItem()))
+                                    )
                                 } else {
                                     playerConnection.playQueue(
                                         YouTubeQueue(
@@ -468,4 +481,3 @@ fun OnlineSearchResult(
         }
     }
 }
-

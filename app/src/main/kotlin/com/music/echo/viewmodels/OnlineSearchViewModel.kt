@@ -19,6 +19,7 @@ import iad1tya.echo.music.constants.HideExplicitKey
 import iad1tya.echo.music.constants.HideVideoSongsKey
 import iad1tya.echo.music.constants.HideYoutubeShortsKey
 import iad1tya.echo.music.models.ItemsPage
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
 import iad1tya.echo.music.utils.dataStore
 import iad1tya.echo.music.utils.get
 import iad1tya.echo.music.utils.reportException
@@ -44,10 +45,33 @@ constructor(
     val filter = MutableStateFlow<YouTube.SearchFilter?>(null)
     var summaryPage by mutableStateOf<SearchSummaryPage?>(null)
     val viewStateMap = mutableStateMapOf<String, ItemsPage?>()
+    private val extensionManager = ClassicExtensionManager.get(context)
 
     init {
         viewModelScope.launch {
             filter.collect { filter ->
+                extensionManager.ensureLoaded()
+                if (extensionManager.selectedMusicExtensionId.value != null) {
+                    runCatching {
+                        val extensionResults = extensionManager.search(query)
+                        if (filter == null) {
+                            summaryPage = extensionResults
+                        } else {
+                            val items = if (filter.value == YouTube.SearchFilter.FILTER_SONG.value) {
+                                extensionResults.summaries.flatMap { it.items }
+                            } else {
+                                emptyList()
+                            }
+                            viewStateMap[filter.value] = ItemsPage(items, null)
+                        }
+                    }.onFailure {
+                        reportException(it)
+                        if (filter == null) summaryPage = SearchSummaryPage(emptyList())
+                        else viewStateMap[filter.value] = ItemsPage(emptyList(), null)
+                    }
+                    return@collect
+                }
+
                 if (filter == null) {
                     if (summaryPage == null) {
                         YouTube
@@ -96,6 +120,7 @@ constructor(
     }
 
     fun loadMore() {
+        if (extensionManager.selectedMusicExtensionId.value != null) return
         val filter = filter.value?.value
         viewModelScope.launch {
             if (filter == null) return@launch

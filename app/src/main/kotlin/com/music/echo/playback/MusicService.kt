@@ -155,6 +155,7 @@ import iad1tya.echo.music.extensions.toEnum
 import iad1tya.echo.music.extensions.toMediaItem
 import iad1tya.echo.music.extensions.toPersistQueue
 import iad1tya.echo.music.extensions.toQueue
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
 import iad1tya.echo.music.echomusic.updater.downloadmanager.EchoNotificationProvider
 import iad1tya.echo.music.lyrics.LyricsHelper
 import iad1tya.echo.music.models.PersistPlayerState
@@ -2911,6 +2912,16 @@ class MusicService :
                     throw androidx.media3.common.PlaybackException("Local file deleted", e, androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND)
                 }
                 return@Factory dataSpec
+            }
+
+            if (ClassicExtensionManager.isExtensionMediaId(mediaId)) {
+                val resolved = runBlocking(Dispatchers.IO) {
+                    ClassicExtensionManager.get(this@MusicService).resolve(mediaId)
+                }
+                return@Factory dataSpec.buildUpon()
+                    .setUri(resolved.url.toUri())
+                    .setHttpRequestHeaders(resolved.headers)
+                    .build()
             }
 
 

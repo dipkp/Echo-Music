@@ -184,3 +184,7 @@
 -keepclasseswithmembers class iad1tya.echo.music.listentogether.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# Echo extension clients are loaded from APK manifest class names at runtime.
+-keep class dev.brahmkshatriya.echo.common.** { *; }
+-keepattributes *Annotation*

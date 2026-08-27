@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Search
@@ -75,6 +76,7 @@ highlightKey: String? = null) {
     val playerText = stringResource(R.string.player_and_audio)
     val listenTogetherText = stringResource(R.string.listen_together)
     val contentText = stringResource(R.string.content)
+    val extensionsText = "Extensions"
     val aiLyricsText = stringResource(R.string.ai_lyrics_translation)
     val privacyText = stringResource(R.string.privacy)
     val storageText = stringResource(R.string.storage)
@@ -223,6 +225,23 @@ highlightKey: String? = null) {
                         icon = painterResource(R.drawable.language),
                         title = { Text(contentText) },
                         onClick = { navController.navigate("settings/content") }
+                    )
+                )
+            }
+
+            if (extensionsText.lowercase().contains(searchLower)) {
+                add(
+                    Material3SettingsItem(
+                        isHighlighted = (highlightKey == extensionsText),
+                        customIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.Extension,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
+                            )
+                        },
+                        title = { Text(extensionsText) },
+                        onClick = { navController.navigate("settings/extensions") }
                     )
                 )
             }

@@ -15,7 +15,6 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.protobufPlugin)
 }
-
 val hasGoogleServicesConfig = file("google-services.json").exists()
 
 if (hasGoogleServicesConfig) {
@@ -314,6 +313,7 @@ dependencies {
     implementation(libs.jsoup)
     ksp(libs.hilt.compiler)
 
+    implementation(project(":echo-common"))
     implementation(project(":innertube"))
     implementation(project(":kugou"))
     implementation(project(":lrclib"))
