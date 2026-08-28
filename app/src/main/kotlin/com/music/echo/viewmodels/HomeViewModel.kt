@@ -591,6 +591,11 @@ class HomeViewModel @Inject constructor(
                     accountName.value = user?.name ?: "Guest"
                     accountImageUrl.value = extensionManager.imageUrl(user?.cover)
                     accountPlaylists.value = emptyList()
+                    // Installing/selecting an extension or completing login must update
+                    // the already-visible classic Home screen without restarting the app.
+                    if (extensionManager.selectedMusicExtensionId.value != null) {
+                        loadNetworkDataPhase()
+                    }
                 }
         }
     }

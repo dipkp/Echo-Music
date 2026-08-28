@@ -200,7 +200,6 @@ import iad1tya.echo.music.ui.menu.YouTubeSongMenu
 import iad1tya.echo.music.ui.player.BottomSheetPlayer
 import iad1tya.echo.music.ui.screens.Screens
 import iad1tya.echo.music.ui.screens.SettingDialoge
-import iad1tya.echo.music.ui.screens.WelcomeDialog
 import iad1tya.echo.music.ui.screens.navigationBuilder
 import iad1tya.echo.music.ui.screens.settings.DarkMode
 import iad1tya.echo.music.ui.screens.settings.NavigationTab
@@ -836,15 +835,6 @@ class MainActivity : ComponentActivity() {
                 val snackbarHostState = remember { SnackbarHostState() }
                 var showSettingDialoge by remember { mutableStateOf(false) }
 
-                val (lastOpenedVersionCode, setLastOpenedVersionCode) = rememberPreference(iad1tya.echo.music.constants.LastOpenedVersionCodeKey, -1)
-                var showWelcomeDialog by remember { mutableStateOf(false) }
-
-                LaunchedEffect(lastOpenedVersionCode) {
-                    if (lastOpenedVersionCode < BuildConfig.VERSION_CODE) {
-                        showWelcomeDialog = true
-                    }
-                }
-
                 LaunchedEffect(Unit) {
                     if (pendingIntent != null) {
                         handleDeepLinkIntent(pendingIntent!!, navController)
@@ -876,7 +866,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val currentTitle = when (navBackStackEntry?.destination?.route) {
-                    Screens.Home.route -> "Echo Music"
+                    Screens.Home.route -> stringResource(R.string.app_name)
                     Screens.Search.route -> stringResource(R.string.search)
                     Screens.Library.route -> stringResource(R.string.filter_library)
                     Screens.ListenTogether.route -> stringResource(R.string.together)
@@ -1380,15 +1370,6 @@ class MainActivity : ComponentActivity() {
                                 navController.navigate(route)
                             },
                             homeViewModel = homeViewModel
-                        )
-                    }
-
-                    if (showWelcomeDialog) {
-                        WelcomeDialog(
-                            onDismissRequest = {
-                                showWelcomeDialog = false
-                                setLastOpenedVersionCode(BuildConfig.VERSION_CODE)
-                            }
                         )
                     }
 

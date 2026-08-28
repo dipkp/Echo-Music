@@ -165,9 +165,13 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         val selectedClient = mutex.withLock {
             resolvedStreams.clear()
             classicTrackMappings.clear()
+            // Android 14+ refuses to load writable DEX/APK files. Echo Nightly makes both
+            // the extension directory and every installed APK read-only before parsing.
+            extensionDirectory.setReadOnly()
             val sourceFiles = extensionDirectory.listFiles()
                 .orEmpty()
                 .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) }
+                .onEach { it.setWritable(false) }
                 .sortedBy { it.name.lowercase(Locale.ROOT) }
             val specs = sourceFiles.map { file ->
                 file to runCatching { createRuntimeSpec(file) }
@@ -227,8 +231,17 @@ class ClassicExtensionManager private constructor(private val context: Context) 
                 val metadata = parseMetadata(staging)
                 val safeId = metadata.id.replace(Regex("[^A-Za-z0-9._-]"), "_")
                 val destination = File(extensionDirectory, "$safeId.apk")
-                staging.copyTo(destination, overwrite = true)
+                // Match Nightly's install sequence: temporarily unlock the destination,
+                // replace it, then lock the APK before DexClassLoader sees it.
+                extensionDirectory.setWritable(true)
+                destination.setWritable(true)
+                if (destination.exists()) {
+                    check(destination.delete()) { "Unable to replace ${destination.name}" }
+                }
+                staging.copyTo(destination, overwrite = false)
                 destination.setReadable(true, true)
+                destination.setWritable(false)
+                extensionDirectory.setReadOnly()
                 reload()
                 val entry = _entries.value.first { it.id == metadata.id }
                 entry.client ?: error(
@@ -246,7 +259,13 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             ensureLoaded()
             val entry = _entries.value.firstOrNull { it.id == id }
                 ?: error("Extension not found: $id")
-            check(entry.file.delete()) { "Unable to delete ${entry.file.name}" }
+            extensionDirectory.setWritable(true)
+            entry.file.setWritable(true)
+            try {
+                check(entry.file.delete()) { "Unable to delete ${entry.file.name}" }
+            } finally {
+                extensionDirectory.setReadOnly()
+            }
             preferences.edit().remove(enabledKey(id)).apply()
             if (_selectedMusicExtensionId.value == id) setSelectedId(null)
             reload()
