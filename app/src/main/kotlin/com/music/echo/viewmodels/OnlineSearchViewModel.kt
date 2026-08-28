@@ -11,17 +11,9 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.music.innertube.YouTube
-import com.music.innertube.models.filterExplicit
-import com.music.innertube.models.filterVideoSongs
-import com.music.innertube.models.filterYoutubeShorts
 import com.music.innertube.pages.SearchSummaryPage
-import iad1tya.echo.music.constants.HideExplicitKey
-import iad1tya.echo.music.constants.HideVideoSongsKey
-import iad1tya.echo.music.constants.HideYoutubeShortsKey
 import iad1tya.echo.music.models.ItemsPage
 import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
-import iad1tya.echo.music.utils.dataStore
-import iad1tya.echo.music.utils.get
 import iad1tya.echo.music.utils.reportException
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -56,69 +48,22 @@ constructor(
                     else viewStateMap[filter.value] = ItemsPage(emptyList(), null)
                     return@collect
                 }
-                if (extensionManager.selectedMusicExtensionId.value != null) {
-                    runCatching {
-                        val extensionResults = extensionManager.search(query)
-                        if (filter == null) {
-                            summaryPage = extensionResults
+                runCatching {
+                    val extensionResults = extensionManager.search(query)
+                    if (filter == null) {
+                        summaryPage = extensionResults
+                    } else {
+                        val items = if (filter.value == YouTube.SearchFilter.FILTER_SONG.value) {
+                            extensionResults.summaries.flatMap { it.items }
                         } else {
-                            val items = if (filter.value == YouTube.SearchFilter.FILTER_SONG.value) {
-                                extensionResults.summaries.flatMap { it.items }
-                            } else {
-                                emptyList()
-                            }
-                            viewStateMap[filter.value] = ItemsPage(items, null)
+                            emptyList()
                         }
-                    }.onFailure {
-                        reportException(it)
-                        if (filter == null) summaryPage = SearchSummaryPage(emptyList())
-                        else viewStateMap[filter.value] = ItemsPage(emptyList(), null)
+                        viewStateMap[filter.value] = ItemsPage(items, null)
                     }
-                    return@collect
-                }
-
-                if (filter == null) {
-                    if (summaryPage == null) {
-                        YouTube
-                            .searchSummary(query)
-                            .onSuccess {
-                                val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-                                val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
-                                val hideYoutubeShorts = context.dataStore.get(HideYoutubeShortsKey, false)
-                                summaryPage =
-                                    it.filterExplicit(
-                                        hideExplicit,
-                                    ).filterVideoSongs(hideVideoSongs).filterYoutubeShorts(hideYoutubeShorts)
-                            }.onFailure {
-                                reportException(it)
-                            }
-                    }
-                } else {
-                    if (viewStateMap[filter.value] == null) {
-                        YouTube
-                            .search(query, filter)
-                            .onSuccess { result ->
-                                val hideExplicit = context.dataStore.get(HideExplicitKey, false)
-                                val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
-                                val hideYoutubeShorts = context.dataStore.get(HideYoutubeShortsKey, false)
-                                viewStateMap[filter.value] =
-                                    ItemsPage(
-                                        result.items
-                                            .distinctBy { it.id }
-                                            .filterExplicit(
-                                                hideExplicit,
-                                            )
-                                            .let { items ->
-                                                if (filter.value == YouTube.SearchFilter.FILTER_VIDEO.value) items
-                                                else items.filterVideoSongs(hideVideoSongs)
-                                            }
-                                            .filterYoutubeShorts(hideYoutubeShorts),
-                                        result.continuation,
-                                    )
-                            }.onFailure {
-                                reportException(it)
-                            }
-                    }
+                }.onFailure {
+                    reportException(it)
+                    if (filter == null) summaryPage = SearchSummaryPage(emptyList())
+                    else viewStateMap[filter.value] = ItemsPage(emptyList(), null)
                 }
             }
         }

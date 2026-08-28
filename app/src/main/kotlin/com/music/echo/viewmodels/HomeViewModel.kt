@@ -19,14 +19,10 @@ import com.music.innertube.models.BrowseEndpoint
 import com.music.innertube.models.YTItem
 import com.music.innertube.models.filterExplicit
 import com.music.innertube.models.filterVideoSongs
-import com.music.innertube.models.filterYoutubeShorts
 import com.music.innertube.pages.ExplorePage
 import com.music.innertube.pages.HomePage
-import com.music.innertube.utils.completed
 import iad1tya.echo.music.constants.HideExplicitKey
 import iad1tya.echo.music.constants.HideVideoSongsKey
-import iad1tya.echo.music.constants.HideYoutubeShortsKey
-import iad1tya.echo.music.constants.InnerTubeCookieKey
 import iad1tya.echo.music.constants.QuickPicks
 import iad1tya.echo.music.constants.QuickPicksKey
 import iad1tya.echo.music.db.MusicDatabase
@@ -48,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -250,10 +247,6 @@ class HomeViewModel @Inject constructor(
         }
     }
     
-    private var lastProcessedCookie: String? = null
-    
-    private var isProcessingAccountData = false
-
     private suspend fun getDailyDiscover() {
         val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
         val likedSongs = database.likedSongsByCreateDateAsc().first()
@@ -561,17 +554,6 @@ class HomeViewModel @Inject constructor(
         selectedChip.value = null
     }
 
-    private suspend fun loadAccountPlaylists() {
-        val hideYoutubeShorts = context.dataStore.get(HideYoutubeShortsKey, false)
-        YouTube.library("FEmusic_liked_playlists").completed().onSuccess {
-            accountPlaylists.value = it.items.filterIsInstance<PlaylistItem>()
-                .filterNot { it.id == "SE" }
-                .filterYoutubeShorts(hideYoutubeShorts)
-        }.onFailure {
-            reportException(it)
-        }
-    }
-
     fun refresh() {
         if (isRefreshing.value) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -592,11 +574,7 @@ class HomeViewModel @Inject constructor(
 
         
         viewModelScope.launch(Dispatchers.IO) {
-            context.dataStore.data
-                .map { it[InnerTubeCookieKey] }
-                .distinctUntilChanged()
-                .first()
-
+            extensionManager.ensureLoaded()
             load()
         }
 
@@ -607,49 +585,12 @@ class HomeViewModel @Inject constructor(
 
         
         viewModelScope.launch(Dispatchers.IO) {
-            context.dataStore.data
-                .map { it[InnerTubeCookieKey] }
-                .collect { cookie ->
-                    
-                    if (isProcessingAccountData) return@collect
-
-                    
-                    lastProcessedCookie = cookie
-                    isProcessingAccountData = true
-
-                    try {
-                        if (cookie != null && cookie.isNotEmpty()) {
-
-                            
-                            YouTube.cookie = cookie
-
-                            
-                            YouTube.accountInfo().onSuccess { info ->
-                                accountName.value = info.name
-                                accountImageUrl.value = info.thumbnailUrl
-                            }.onFailure {
-                                reportException(it)
-                            }
-                        } else {
-                            accountName.value = "Guest"
-                            accountImageUrl.value = null
-                            accountPlaylists.value = null
-                        }
-                    } finally {
-                        isProcessingAccountData = false
-                    }
-                }
-        }
-
-        
-        viewModelScope.launch(Dispatchers.IO) {
-            context.dataStore.data
-                .map { it[HideYoutubeShortsKey] ?: false }
-                .distinctUntilChanged()
-                .collect {
-                    if (YouTube.cookie != null && accountPlaylists.value != null) {
-                        loadAccountPlaylists()
-                    }
+            extensionManager.selectedMusicExtensionId
+                .combine(extensionManager.loginUsers) { id, users -> id?.let(users::get) }
+                .collect { user ->
+                    accountName.value = user?.name ?: "Guest"
+                    accountImageUrl.value = extensionManager.imageUrl(user?.cover)
+                    accountPlaylists.value = emptyList()
                 }
         }
     }

@@ -133,7 +133,6 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import iad1tya.echo.music.db.MusicDatabase
 import iad1tya.echo.music.db.entities.Event
-import iad1tya.echo.music.db.entities.FormatEntity
 import iad1tya.echo.music.db.entities.LyricsEntity
 import iad1tya.echo.music.db.entities.RelatedSongMap
 import iad1tya.echo.music.db.entities.Song
@@ -175,7 +174,6 @@ import iad1tya.echo.music.ui.screens.settings.DiscordPresenceManager
 import iad1tya.echo.music.utils.NetworkConnectivityObserver
 import iad1tya.echo.music.utils.ScrobbleManager
 import iad1tya.echo.music.utils.SyncUtils
-import iad1tya.echo.music.utils.YTPlayerUtils
 import iad1tya.echo.music.utils.dataStore
 import iad1tya.echo.music.utils.get
 import iad1tya.echo.music.utils.reportException
@@ -1407,19 +1405,13 @@ class MusicService :
         )
     }
 
-    private suspend fun recoverSong(
-        mediaId: String,
-        playbackData: YTPlayerUtils.PlaybackData? = null,
-        isOfflinePlayback: Boolean = false
-    ) {
+    private suspend fun recoverSong(mediaId: String) {
         val song = database.song(mediaId).first()
         val mediaMetadata = withContext(Dispatchers.Main) {
             player.findNextMediaItemById(mediaId)?.metadata
         } ?: return
         val duration = song?.song?.duration?.takeIf { it != -1 }
             ?: mediaMetadata.duration.takeIf { it != -1 }
-            ?: if (isOfflinePlayback) -1 else (playbackData?.videoDetails ?: YTPlayerUtils.playerResponseForMetadata(mediaId)
-                .getOrNull()?.videoDetails)?.lengthSeconds?.toInt()
             ?: -1
         database.query {
             if (song == null) insert(mediaMetadata.copy(duration = duration))
@@ -1435,24 +1427,6 @@ class MusicService :
                 if (updatedSong != song.song) {
                     update(updatedSong)
                 }
-            }
-        }
-        if (!isOfflinePlayback && !database.hasRelatedSongs(mediaId)) {
-            val relatedEndpoint =
-                YouTube.next(WatchEndpoint(videoId = mediaId)).getOrNull()?.relatedEndpoint
-                    ?: return
-            val relatedPage = YouTube.related(relatedEndpoint).getOrNull() ?: return
-            database.query {
-                relatedPage.songs
-                    .map(SongItem::toMediaMetadata)
-                    .onEach(::insert)
-                    .map {
-                        RelatedSongMap(
-                            songId = mediaId,
-                            relatedSongId = it.id
-                        )
-                    }
-                    .forEach(::insert)
             }
         }
     }
@@ -2506,12 +2480,7 @@ class MusicService :
         }
 
         
-        try {
-            YTPlayerUtils.forceRefreshForVideo(mediaId)
-            Timber.tag(TAG).d("Cleared decryption caches for $mediaId")
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Failed to clear decryption caches for $mediaId")
-        }
+        ClassicExtensionManager.get(this).invalidate(mediaId)
     }
 
     
@@ -2667,11 +2636,7 @@ class MusicService :
         Timber.tag(TAG).d("Cleared cached URL for $mediaId")
 
         
-        try {
-            YTPlayerUtils.forceRefreshForVideo(mediaId)
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Failed to clear decryption caches")
-        }
+        ClassicExtensionManager.get(this).invalidate(mediaId)
 
         retryJob?.cancel()
         retryJob = scope.launch {
@@ -2969,7 +2934,7 @@ class MusicService :
 
             if (!shouldBypassCache) {
                 if (isFullyDownloaded) {
-                    scope.launch(Dispatchers.IO) { recoverSong(mediaId, isOfflinePlayback = true) }
+                    scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
                     return@Factory dataSpec
                 }
 
@@ -2980,7 +2945,7 @@ class MusicService :
                     )
                 ) {
                     songUrlCache["${mediaId}_${lockedQuality.name}"]?.takeIf { it.second > System.currentTimeMillis() }?.let {
-                        scope.launch(Dispatchers.IO) { recoverSong(mediaId, isOfflinePlayback = true) }
+                        scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
                         return@Factory dataSpec.withUri(it.first.toUri())
                     }
                     // Fall through to fetch real URL since it's only partially downloaded
@@ -2988,7 +2953,7 @@ class MusicService :
 
                 if (playerCache.isCached(mediaId, dataSpec.position, CHUNK_LENGTH)) {
                     songUrlCache["${mediaId}_${lockedQuality.name}"]?.takeIf { it.second > System.currentTimeMillis() }?.let {
-                        scope.launch(Dispatchers.IO) { recoverSong(mediaId, isOfflinePlayback = true) }
+                        scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
                         return@Factory dataSpec.withUri(it.first.toUri())
                     }
                     Timber.tag(TAG).w("Ghost cache entry for $mediaId, re-fetching")
@@ -2996,7 +2961,7 @@ class MusicService :
                 }
 
                 songUrlCache["${mediaId}_${lockedQuality.name}"]?.takeIf { it.second > System.currentTimeMillis() }?.let {
-                        scope.launch(Dispatchers.IO) { recoverSong(mediaId, isOfflinePlayback = true) }
+                        scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
                         return@Factory dataSpec.withUri(it.first.toUri())
                 }
             } else {
@@ -3029,133 +2994,6 @@ class MusicService :
                 null,
                 PlaybackException.ERROR_CODE_REMOTE_ERROR,
             )
-
-            Timber.tag("MusicService").i("FETCHING STREAM: $mediaId | quality=$lockedQuality")
-            val playbackData = runBlocking(Dispatchers.IO) {
-                val dbSong = database.song(mediaId).firstOrNull()
-                val knownArtist = dbSong?.artists?.joinToString { it.name }?.replace(" - Topic", "")
-                val knownTitle = dbSong?.song?.title
-                val knownDuration = dbSong?.song?.duration?.let { if (it > 0) it * 1000L else null }
-
-                YTPlayerUtils.playerResponseForPlayback(
-                    mediaId,
-                    audioQuality = lockedQuality,
-                    connectivityManager = connectivityManager,
-                    context = this@MusicService,
-                    knownArtist = knownArtist,
-                    knownTitle = knownTitle,
-                    knownDurationMs = knownDuration
-                )
-            }.getOrElse { throwable ->
-                when (throwable) {
-                    is PlaybackException -> throw throwable
-
-                    is java.net.ConnectException, is java.net.UnknownHostException -> {
-                        throw PlaybackException(
-                            getString(R.string.error_no_internet),
-                            throwable,
-                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
-                        )
-                    }
-
-                    is java.net.SocketTimeoutException -> {
-                        throw PlaybackException(
-                            getString(R.string.error_timeout),
-                            throwable,
-                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
-                        )
-                    }
-
-                    else -> throw PlaybackException(
-                        getString(R.string.error_unknown),
-                        throwable,
-                        PlaybackException.ERROR_CODE_REMOTE_ERROR
-                    )
-                }
-            }
-
-            val nonNullPlayback = requireNotNull(playbackData) {
-                getString(R.string.error_unknown)
-            }
-            run {
-                val format = nonNullPlayback.format
-                
-                val isFinalLossless = format.mimeType.contains("flac", ignoreCase = true)
-                val isFinalSaavn = format.mimeType.contains("mp4", ignoreCase = true) || format.mimeType.contains("m4a", ignoreCase = true)
-                
-                var targetCacheKey = mediaId
-                
-                if (dbFormat != null && !shouldBypassCache) {
-                    val cacheIsLossless = dbFormat.codecs == "flac"
-                    val cacheIsSaavn = dbFormat.codecs == "mp4a.40.2" || dbFormat.mimeType.contains("mp4", ignoreCase = true)
-                    
-                    if (isFinalLossless != cacheIsLossless || isFinalSaavn != cacheIsSaavn) {
-                        Timber.tag(TAG).w("Format fallback detected AFTER fetch. Clearing playerCache to prevent mismatch crash.")
-                        playerCache.removeResource(mediaId)
-                        
-                        if (activeQualityInCache != null) {
-                            Timber.tag(TAG).e("Format changed mid-stream for $mediaId. Throwing to force player restart.")
-                            runBlocking(Dispatchers.IO) { database.query { deleteFormat(mediaId) } }
-                            throw PlaybackException(
-                                "Container format changed mid-stream due to fallback",
-                                null,
-                                PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED
-                            )
-                        }
-                    }
-                } else if (dbFormat != null && shouldBypassCache) {
-                    val cacheIsLossless = dbFormat.codecs == "flac"
-                    val cacheIsSaavn = dbFormat.codecs == "mp4a.40.2" || dbFormat.mimeType.contains("mp4", ignoreCase = true)
-                    
-                    if (isFinalLossless != cacheIsLossless || isFinalSaavn != cacheIsSaavn) {
-                        Timber.tag(TAG).i("Bypassed cache and fetched different format. Using custom cache key to prevent intercept.")
-                        targetCacheKey = "${mediaId}_diff"
-                    } else {
-                        Timber.tag(TAG).i("Bypassed cache but fallback resulted in cached format. Using original cache key.")
-                        targetCacheKey = mediaId
-                    }
-                }
-
-                val loudnessDb = nonNullPlayback.audioConfig?.loudnessDb
-                val perceptualLoudnessDb = nonNullPlayback.audioConfig?.perceptualLoudnessDb
-
-                Timber.tag(TAG).d("Storing format for $mediaId with loudnessDb: $loudnessDb, perceptualLoudnessDb: $perceptualLoudnessDb")
-                if (loudnessDb == null && perceptualLoudnessDb == null) {
-                    Timber.tag(TAG).w("No loudness data available from YouTube for video: $mediaId")
-                }
-
-                if (!isFullyDownloaded || targetCacheKey == mediaId) {
-                    database.query {
-                        upsert(
-                            FormatEntity(
-                                id = mediaId,
-                                itag = format.itag,
-                                mimeType = format.mimeType.split(";")[0],
-                                codecs = format.mimeType.substringAfter("codecs=", "\"\"").substringBefore(";").removeSurrounding("\"").takeIf { it.isNotEmpty() } ?: "unknown",
-                                bitrate = format.bitrate,
-                                sampleRate = format.audioSampleRate,
-                                contentLength = format.contentLength ?: 0L,
-                                loudnessDb = loudnessDb,
-                                perceptualLoudnessDb = perceptualLoudnessDb,
-                                playbackUrl = nonNullPlayback.playbackTracking?.videostatsPlaybackUrl?.baseUrl
-                            )
-                        )
-                    }
-                }
-                scope.launch(Dispatchers.IO) { recoverSong(mediaId, nonNullPlayback) }
-
-                
-                if (bypassCacheForQualityChange.remove(mediaId)) {
-                    Timber.tag("MusicService").d("Cleared bypass cache flag for $mediaId after fresh fetch")
-                }
-
-                val streamUrl = nonNullPlayback.streamUrl
-
-                songUrlCache["${mediaId}_${lockedQuality.name}"] =
-                    streamUrl to System.currentTimeMillis() + (nonNullPlayback.streamExpiresInSeconds * 1000L)
-                
-                return@Factory dataSpec.buildUpon().setKey(targetCacheKey).setUri(streamUrl.toUri()).build()
-            }
         }
     }
 
@@ -3457,14 +3295,25 @@ class MusicService :
     suspend fun getStreamUrl(mediaId: String): String? {
         return withContext(Dispatchers.IO) {
             try {
-                val playbackData = YTPlayerUtils.playerResponseForPlayback(
-                    videoId = mediaId,
-                    audioQuality = audioQuality,
-                    connectivityManager = connectivityManager,
-                ).getOrNull()
-                playbackData?.streamUrl
+                val manager = ClassicExtensionManager.get(this@MusicService)
+                val resolved = if (ClassicExtensionManager.isExtensionMediaId(mediaId)) {
+                    manager.resolve(mediaId)
+                } else {
+                    val dbSong = database.song(mediaId).firstOrNull()
+                    val queueMetadata = player.mediaItems
+                        .firstOrNull { it.mediaId == mediaId }
+                        ?.metadata
+                    manager.resolveClassicSong(
+                        classicMediaId = mediaId,
+                        title = dbSong?.title ?: queueMetadata?.title.orEmpty(),
+                        artists = dbSong?.artists?.map { it.name }
+                            ?: queueMetadata?.artists?.map { it.name }.orEmpty(),
+                    )
+                }
+                (resolved.source as? dev.brahmkshatriya.echo.common.models.Streamable.Source.Http)
+                    ?.request?.url
             } catch (e: Exception) {
-                timber.log.Timber.e(e, "Failed to get stream URL for Cast")
+                timber.log.Timber.e(e, "Extension could not provide a castable HTTP stream")
                 null
             }
         }
@@ -4204,24 +4053,27 @@ class MusicService :
 
                 val isFullyDownloaded = downloadCache.getCachedSpans(mediaId).isNotEmpty()
                 if (!mediaId.isLocalMediaId() && !songUrlCache.containsKey("${mediaId}_${audioQuality.name}") && !isFullyDownloaded) {
-                    Timber.tag(TAG).d("Preloading stream for $mediaId")
+                    Timber.tag(TAG).d("Preloading extension stream for $mediaId")
                     kotlin.runCatching {
+                        val manager = ClassicExtensionManager.get(this@MusicService)
                         val dbSong = database.song(mediaId).firstOrNull()
-                        val knownArtist = dbSong?.artists?.joinToString(separator = ", ") { artist -> artist.name }?.replace(" - Topic", "")
-                        
-                        val playbackData = iad1tya.echo.music.utils.YTPlayerUtils.playerResponseForPlayback(
-                            videoId = mediaId,
-                            audioQuality = audioQuality,
-                            connectivityManager = connectivityManager,
-                            context = this@MusicService,
-                            knownArtist = knownArtist,
-                            knownTitle = dbSong?.song?.title,
-                            knownDurationMs = dbSong?.song?.duration?.let { if (it > 0) it * 1000L else null }
-                        )
-
-                        playbackData.getOrNull()?.streamUrl?.let { streamUrl ->
+                        val queueMetadata = player.mediaItems
+                            .firstOrNull { it.mediaId == mediaId }
+                            ?.metadata
+                        val resolved = if (ClassicExtensionManager.isExtensionMediaId(mediaId)) {
+                            manager.resolve(mediaId)
+                        } else {
+                            manager.resolveClassicSong(
+                                classicMediaId = mediaId,
+                                title = dbSong?.title ?: queueMetadata?.title.orEmpty(),
+                                artists = dbSong?.artists?.map { it.name }
+                                    ?: queueMetadata?.artists?.map { it.name }.orEmpty(),
+                            )
+                        }
+                        (resolved.source as? dev.brahmkshatriya.echo.common.models.Streamable.Source.Http)
+                            ?.request?.url?.let { streamUrl ->
                             songUrlCache["${mediaId}_${audioQuality.name}"] = Pair(streamUrl, System.currentTimeMillis() + 1000 * 60 * 60)
-                            Timber.tag(TAG).d("Preloaded stream for $mediaId")
+                            Timber.tag(TAG).d("Preloaded extension stream for $mediaId")
                         }
                     }
                 }

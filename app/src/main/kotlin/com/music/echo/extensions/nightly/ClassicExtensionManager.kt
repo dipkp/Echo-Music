@@ -271,6 +271,9 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         setSelectedId(entry.id)
         refreshNetworkState()
         entry.client?.onExtensionSelected()
+        if (entry.client is LoginClient && storedUser(entry.id) == null) {
+            launchLogin(entry.id)
+        }
     }
 
     suspend fun settingsFor(id: String): List<Setting> {
@@ -291,6 +294,8 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     }
 
     fun clientFor(id: String): ExtensionClient? = _entries.value.firstOrNull { it.id == id }?.client
+
+    fun imageUrl(image: ImageHolder?): String? = image.toClassicUrl()
 
     fun launchLogin(id: String) {
         val entry = _entries.value.firstOrNull { it.id == id && it.client is LoginClient }
@@ -401,6 +406,12 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         val builder = item.toMediaItem().buildUpon().setUri(resolved.uri)
         resolved.mimeType?.let(builder::setMimeType)
         return builder.build()
+    }
+
+    /** Invalidates Nightly stream resolution so Media3 retries through the extension. */
+    fun invalidate(mediaId: String) {
+        resolvedStreams.remove(mediaId)
+        classicTrackMappings.remove(mediaId)?.let(resolvedStreams::remove)
     }
 
     /** Resolves a song shown by the classic UI through the selected extension backend. */

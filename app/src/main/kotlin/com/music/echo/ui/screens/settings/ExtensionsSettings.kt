@@ -76,8 +76,18 @@ fun ExtensionsSettings(
         if (uri != null) {
             scope.launch {
                 manager.install(uri)
-                    .onSuccess {
-                        Toast.makeText(context, "Installed ${it.name}", Toast.LENGTH_SHORT).show()
+                    .onSuccess { metadata ->
+                        Toast.makeText(context, "Installed ${metadata.name}", Toast.LENGTH_SHORT).show()
+                        if (metadata.type == dev.brahmkshatriya.echo.common.models.ExtensionType.MUSIC) {
+                            runCatching { manager.selectMusicExtension(metadata.id) }
+                                .onFailure {
+                                    Toast.makeText(
+                                        context,
+                                        it.message ?: "Could not activate extension",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                        }
                     }
                     .onFailure {
                         Toast.makeText(

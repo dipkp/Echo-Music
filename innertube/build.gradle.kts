@@ -29,7 +29,11 @@ dependencies {
     implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.client.encoding)
     implementation(libs.brotli)
-    implementation(libs.newpipeextractor)
+    implementation(libs.newpipeextractor) {
+        // The host intentionally uses protobuf-java to match Echo Nightly extensions.
+        // Full protobuf includes the lite APIs NewPipe uses.
+        exclude(group = "com.google.protobuf", module = "protobuf-javalite")
+    }
     testImplementation(libs.junit)
 
     coreLibraryDesugaring(libs.desugaring)
