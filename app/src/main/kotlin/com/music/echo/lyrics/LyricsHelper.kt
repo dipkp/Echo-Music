@@ -9,6 +9,7 @@ import iad1tya.echo.music.constants.PreferredLyricsProvider
 import iad1tya.echo.music.constants.PreferredLyricsProviderKey
 import iad1tya.echo.music.db.entities.LyricsEntity.Companion.LYRICS_NOT_FOUND
 import iad1tya.echo.music.extensions.toEnum
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
 import iad1tya.echo.music.models.MediaMetadata
 import iad1tya.echo.music.utils.NetworkConnectivityObserver
 import iad1tya.echo.music.utils.dataStore
@@ -61,6 +62,14 @@ constructor(
         val cached = cache.get(mediaMetadata.id)?.firstOrNull()
         if (cached != null) {
             return LyricsWithProvider(cached.lyrics, cached.providerName)
+        }
+
+        if (ClassicExtensionManager.isExtensionMediaId(mediaMetadata.id)) {
+            runCatching {
+                ClassicExtensionManager.get(context).loadLyrics(mediaMetadata.id)
+            }.getOrNull()?.let { lyrics ->
+                return LyricsWithProvider(lyrics.text, lyrics.provider)
+            }
         }
 
         val isNetworkAvailable = try {

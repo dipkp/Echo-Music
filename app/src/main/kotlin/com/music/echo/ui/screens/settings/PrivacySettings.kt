@@ -154,12 +154,13 @@ highlightKey: String? = null) {
         )
 
         Material3SettingsGroup(scrollState = scrollState, 
-            title = stringResource(R.string.listen_history),
+            title = "On this device · Listening history",
             items = listOf(
                 Material3SettingsItem(
     isHighlighted = (highlightKey == stringResource(R.string.pause_listen_history)),
                     icon = painterResource(R.drawable.history),
                     title = { Text(stringResource(R.string.pause_listen_history)) },
+                    description = { Text("Controls Music's local history only; extension account history is unchanged") },
                     trailingContent = {
                         Switch(
                             checked = pauseListenHistory,
@@ -181,6 +182,7 @@ highlightKey: String? = null) {
     isHighlighted = (highlightKey == stringResource(R.string.clear_listen_history)),
                     icon = painterResource(R.drawable.delete_history),
                     title = { Text(stringResource(R.string.clear_listen_history)) },
+                    description = { Text("Clears history stored by this app only") },
                     onClick = { showClearListenHistoryDialog = true }
                 )
             )
@@ -189,12 +191,13 @@ highlightKey: String? = null) {
         Spacer(modifier = Modifier.height(27.dp))
 
         Material3SettingsGroup(scrollState = scrollState, 
-            title = stringResource(R.string.search_history),
+            title = "On this device · Search history",
             items = listOf(
                 Material3SettingsItem(
     isHighlighted = (highlightKey == stringResource(R.string.pause_search_history)),
                     icon = painterResource(R.drawable.search_off),
                     title = { Text(stringResource(R.string.pause_search_history)) },
+                    description = { Text("Controls Music's local searches only; extension account history is unchanged") },
                     trailingContent = {
                         Switch(
                             checked = pauseSearchHistory,
@@ -216,6 +219,7 @@ highlightKey: String? = null) {
     isHighlighted = (highlightKey == stringResource(R.string.clear_search_history)),
                     icon = painterResource(R.drawable.clear_all),
                     title = { Text(stringResource(R.string.clear_search_history)) },
+                    description = { Text("Clears searches stored by this app only") },
                     onClick = { showClearSearchHistoryDialog = true }
                 )
             )

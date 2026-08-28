@@ -36,7 +36,6 @@ import iad1tya.echo.music.ui.screens.playlist.OnlinePlaylistScreen
 import iad1tya.echo.music.ui.screens.playlist.TopPlaylistScreen
 import iad1tya.echo.music.ui.screens.search.OnlineSearchResult
 import iad1tya.echo.music.ui.screens.search.SearchScreen
-import iad1tya.echo.music.ui.screens.settings.AboutScreen
 import iad1tya.echo.music.ui.screens.settings.AppearanceSettings
 import iad1tya.echo.music.ui.screens.settings.GlassEffectSettings
 import iad1tya.echo.music.ui.screens.settings.BackupAndRestore
@@ -57,12 +56,8 @@ import iad1tya.echo.music.ui.screens.settings.AiSettings
 import iad1tya.echo.music.ui.screens.settings.integrations.ListenTogetherSettings
 import iad1tya.echo.music.ui.screens.recognition.RecognitionScreen
 import iad1tya.echo.music.ui.screens.recognition.RecognitionHistoryScreen
-import iad1tya.echo.music.ui.screens.settings.UpdateSettings
-import iad1tya.echo.music.echomusic.updater.UpdateScreen
 import iad1tya.echo.music.utils.rememberEnumPreference
 import iad1tya.echo.music.utils.rememberPreference
-import iad1tya.echo.music.echomusic.changelog.ChangelogScreen
-import iad1tya.echo.music.echomusic.commitscreen.CommitScreen
 import iad1tya.echo.music.ui.screens.equalizer.axion.AxionEqScreen
 import iad1tya.echo.music.ui.screens.ambient.AmbientModeScreen
 
@@ -144,7 +139,7 @@ fun NavGraphBuilder.navigationBuilder(
     }
 
     composable("account") {
-        AccountScreen(navController, scrollBehavior)
+        AccountSettingsScreen(navController, scrollBehavior)
     }
 
     composable("new_release") {
@@ -345,13 +340,6 @@ fun NavGraphBuilder.navigationBuilder(
 
 
     composable(
-        route = "settings/update?highlightKey={highlightKey}",
-        arguments = listOf(navArgument("highlightKey") { type = NavType.StringType; nullable = true })
-    ) { backStackEntry ->
-       UpdateSettings(navController, scrollBehavior, highlightKey = backStackEntry.arguments?.getString("highlightKey"))
-    }
-
-    composable(
         route = "settings/account?highlightKey={highlightKey}",
         arguments = listOf(navArgument("highlightKey") { type = NavType.StringType; nullable = true })
     ) { backStackEntry ->
@@ -393,10 +381,6 @@ fun NavGraphBuilder.navigationBuilder(
         arguments = listOf(navArgument("highlightKey") { type = NavType.StringType; nullable = true })
     ) { backStackEntry ->
         AiSettings(navController, scrollBehavior, highlightKey = backStackEntry.arguments?.getString("highlightKey"))
-    }
-    
-    composable("settings/lossless") {
-        iad1tya.echo.music.ui.screens.settings.LosslessContributeScreen(navController, scrollBehavior)
     }
     
     composable(
@@ -464,17 +448,6 @@ fun NavGraphBuilder.navigationBuilder(
         ListenTogetherSettings(navController, scrollBehavior)
     }
 
-    composable(
-        route = "settings/about?highlightKey={highlightKey}",
-        arguments = listOf(navArgument("highlightKey") { type = NavType.StringType; nullable = true })
-    ) { backStackEntry ->
-        AboutScreen(navController, scrollBehavior, highlightKey = backStackEntry.arguments?.getString("highlightKey"))
-    }
-
-    composable("update") {
-        UpdateScreen(navController)
-    }
-
     composable("login") {
         LoginScreen(navController)
     }
@@ -489,11 +462,5 @@ fun NavGraphBuilder.navigationBuilder(
 
     composable("recognition_history") {
         RecognitionHistoryScreen(navController)
-    }
-    composable("settings/changelog") {
-        ChangelogScreen(navController,scrollBehavior)
-    }
-    composable("settings/commits") {
-        CommitScreen(navController, scrollBehavior)
     }
 }

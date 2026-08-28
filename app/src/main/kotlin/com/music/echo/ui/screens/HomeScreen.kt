@@ -126,6 +126,7 @@ import iad1tya.echo.music.db.entities.PlaylistEntity
 import iad1tya.echo.music.db.entities.PlaylistSongMap
 import iad1tya.echo.music.db.entities.Song
 import iad1tya.echo.music.extensions.toMediaItem
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
 import iad1tya.echo.music.LocalDatabase
 import iad1tya.echo.music.LocalPlayerAwareWindowInsets
 import iad1tya.echo.music.LocalPlayerConnection
@@ -572,6 +573,8 @@ fun HomeScreen(
     val database = LocalDatabase.current
     val playerConnection = LocalPlayerConnection.current ?: return
     val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
+    val extensionManager = remember(context) { ClassicExtensionManager.get(context) }
 
     val isPlaying by playerConnection.isEffectivelyPlaying.collectAsState()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
@@ -757,6 +760,37 @@ fun HomeScreen(
             modifier = Modifier
                 .combinedClickable(
                     onClick = {
+                        if (ClassicExtensionManager.isExtensionCollectionId(item.id)) {
+                            scope.launch {
+                                runCatching { extensionManager.loadCollectionTracks(item.id) }
+                                    .onSuccess { songs ->
+                                        if (songs.isEmpty()) {
+                                            snackbarHostState.showSnackbar("This extension collection has no playable songs")
+                                        } else {
+                                            playerConnection.playQueue(
+                                                ListQueue(
+                                                    title = item.title,
+                                                    items = songs.map { it.toMediaItem() },
+                                                )
+                                            )
+                                        }
+                                    }
+                                    .onFailure {
+                                        snackbarHostState.showSnackbar(
+                                            it.message ?: "The extension could not open this collection"
+                                        )
+                                    }
+                            }
+                        } else if (item is SongItem &&
+                            ClassicExtensionManager.isExtensionMediaId(item.id)
+                        ) {
+                            playerConnection.playQueue(
+                                ListQueue(
+                                    title = item.title,
+                                    items = listOf(item.toMediaItem()),
+                                )
+                            )
+                        } else {
                         when (item) {
                             is SongItem -> playerConnection.playQueue(
                                 YouTubeQueue(
@@ -770,8 +804,12 @@ fun HomeScreen(
                             is ArtistItem -> navController.navigate("artist/${item.id}")
                             is PlaylistItem -> navController.navigateToPlaylistItem(item)
                         }
+                        }
                     },
                     onLongClick = {
+                        if (ClassicExtensionManager.isExtensionCollectionId(item.id)) {
+                            return@combinedClickable
+                        }
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         menuState.show {
                             when (item) {
@@ -903,6 +941,14 @@ fun HomeScreen(
             }
         }
     }
+    val extensionHeroSongs = remember(homePage) {
+        homePage?.sections.orEmpty()
+            .flatMap { it.items }
+            .filterIsInstance<SongItem>()
+            .filter { ClassicExtensionManager.isExtensionMediaId(it.id) && it.thumbnail.isNotBlank() }
+            .distinctBy { it.id }
+            .take(8)
+    }
 
     LaunchedEffect(quickPicks) {
         quickPicksLazyGridState.scrollToItem(0)
@@ -981,6 +1027,89 @@ fun HomeScreen(
                                         shape = RoundedCornerShape(16.dp),
                                         modifier = Modifier.width(72.dp)
                                     )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (extensionHeroSongs.isNotEmpty()) {
+                    item(key = "extension_hero_carousel") {
+                        val heroState = rememberPagerState(pageCount = { extensionHeroSongs.size })
+                        HorizontalPager(
+                            state = heroState,
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            pageSpacing = 12.dp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(330.dp)
+                                .padding(vertical = 8.dp),
+                        ) { page ->
+                            val song = extensionHeroSongs[page]
+                            Card(
+                                shape = RoundedCornerShape(32.dp),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .combinedClickable(
+                                        onClick = {
+                                            playerConnection.playQueue(
+                                                ListQueue(
+                                                    title = song.title,
+                                                    items = extensionHeroSongs.map { it.toMediaItem() },
+                                                    startIndex = page,
+                                                )
+                                            )
+                                        },
+                                        onLongClick = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            menuState.show {
+                                                YouTubeSongMenu(
+                                                    song = song,
+                                                    navController = navController,
+                                                    onDismiss = menuState::dismiss,
+                                                )
+                                            }
+                                        },
+                                    ),
+                            ) {
+                                Box(Modifier.fillMaxSize()) {
+                                    AsyncImage(
+                                        model = song.thumbnail,
+                                        contentDescription = song.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                    Box(
+                                        Modifier
+                                            .fillMaxSize()
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f)),
+                                                    startY = 250f,
+                                                )
+                                            )
+                                    )
+                                    Column(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(24.dp),
+                                    ) {
+                                        Text(
+                                            text = song.title,
+                                            style = MaterialTheme.typography.headlineSmall,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = song.artists.joinToString(", ") { it.name },
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = Color.White.copy(alpha = 0.82f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
                                 }
                             }
                         }

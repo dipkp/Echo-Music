@@ -74,6 +74,7 @@ import androidx.navigation.NavController
 import com.music.innertube.YouTube
 import iad1tya.echo.music.LocalDatabase
 import iad1tya.echo.music.LocalDownloadUtil
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
 import iad1tya.echo.music.LocalListenTogetherManager
 import iad1tya.echo.music.LocalPlayerConnection
 import iad1tya.echo.music.R
@@ -340,15 +341,25 @@ fun PlayerMenu(
                         },
                         text = stringResource(R.string.share),
                         onClick = {
-                            val intent = android.content.Intent().apply {
-                                action = android.content.Intent.ACTION_SEND
-                                type = "text/plain"
-                                putExtra(
-                                    android.content.Intent.EXTRA_TEXT,
-                                    "https://share.echomusic.fun/watch?v=${mediaMetadata.id}"
-                                )
+                            coroutineScope.launch {
+                                val extensionUrl = runCatching {
+                                    ClassicExtensionManager.get(context)
+                                        .shareTrack(mediaMetadata.id)
+                                }.getOrNull()
+                                val shareText = extensionUrl ?: buildString {
+                                    append(mediaMetadata.title)
+                                    mediaMetadata.artists.takeIf { it.isNotEmpty() }?.let { list ->
+                                        append(" — ")
+                                        append(list.joinToString(", ") { it.name })
+                                    }
+                                }
+                                val intent = android.content.Intent().apply {
+                                    action = android.content.Intent.ACTION_SEND
+                                    type = "text/plain"
+                                    putExtra(android.content.Intent.EXTRA_TEXT, shareText)
+                                }
+                                context.startActivity(android.content.Intent.createChooser(intent, null))
                             }
-                            context.startActivity(android.content.Intent.createChooser(intent, null))
                             onDismiss()
                         }
                     )

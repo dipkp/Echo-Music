@@ -2,7 +2,6 @@
 
 package iad1tya.echo.music
 import iad1tya.echo.music.R
-import iad1tya.echo.music.BuildConfig
 import iad1tya.echo.music.ui.screens.settings.RingtoneViewModel
 import iad1tya.echo.music.ui.component.RingtoneTrimmerDialog
 import iad1tya.echo.music.ui.component.RingtoneProgressDialog
@@ -167,13 +166,6 @@ import iad1tya.echo.music.constants.MiniPlayerBottomSpacing
 import iad1tya.echo.music.constants.MiniPlayerHeight
 import iad1tya.echo.music.constants.NavigationBarAnimationSpec
 import iad1tya.echo.music.constants.NavigationBarHeight
-import iad1tya.echo.music.echomusic.updater.checkForUpdate
-import iad1tya.echo.music.echomusic.updater.getAutoUpdateCheckSetting
-import iad1tya.echo.music.echomusic.updater.isNewerVersion
-import iad1tya.echo.music.echomusic.updater.saveUpdateAvailableState
-import iad1tya.echo.music.echomusic.updater.getUpdateNotificationsSetting
-import iad1tya.echo.music.echomusic.UpdateNotificationHelper
-import android.util.Log
 import androidx.compose.ui.platform.LocalContext
 import iad1tya.echo.music.constants.PauseListenHistoryKey
 import iad1tya.echo.music.constants.PauseSearchHistoryKey
@@ -430,32 +422,6 @@ class MainActivity : ComponentActivity() {
         val enableDynamicTheme by rememberPreference(DynamicThemeKey, defaultValue = true)
         val enableHighRefreshRate by rememberPreference(EnableHighRefreshRateKey, defaultValue = true)
         val context = LocalContext.current
-
-        LaunchedEffect(Unit) {
-            val prefs = context.dataStore.data.first()
-
-            if (getAutoUpdateCheckSetting(context)) {
-                
-                delay(2000L)
-                checkForUpdate(
-                    context = context,
-                    onSuccess = { latestVersion, isAvailable, _, _, _, _, _, _ ->
-                        val currentVersion = BuildConfig.VERSION_NAME
-                        Log.d("UpdateCheck", "Startup check success. Latest: $latestVersion, Current: $currentVersion, isAvailable: $isAvailable")
-                        saveUpdateAvailableState(context, isAvailable)
-                        
-                        if (isAvailable && getUpdateNotificationsSetting(context)) {
-                            Log.d("UpdateCheck", "Posting update notification for $latestVersion")
-                            UpdateNotificationHelper.showUpdateNotification(context, latestVersion)
-                        }
-                    },
-                    onError = {
-                        Log.e("UpdateCheck", "Startup check failed")
-                        
-                    }
-                )
-            }
-        }
 
         LaunchedEffect(enableHighRefreshRate) {
             val window = this@MainActivity.window
@@ -865,8 +831,11 @@ class MainActivity : ComponentActivity() {
                     onDispose { removeOnNewIntentListener(listener) }
                 }
 
+                val customHomeTitle by rememberPreference(CustomHomeTitleKey, defaultValue = "")
                 val currentTitle = when (navBackStackEntry?.destination?.route) {
-                    Screens.Home.route -> stringResource(R.string.app_name)
+                    Screens.Home.route -> customHomeTitle.trim().ifBlank {
+                        stringResource(R.string.app_name)
+                    }
                     Screens.Search.route -> stringResource(R.string.search)
                     Screens.Library.route -> stringResource(R.string.filter_library)
                     Screens.ListenTogether.route -> stringResource(R.string.together)

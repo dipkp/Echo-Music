@@ -47,14 +47,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.navigation.NavController
-import iad1tya.echo.music.BuildConfig
 import iad1tya.echo.music.LocalPlayerAwareWindowInsets
 import iad1tya.echo.music.ui.component.IconButton
 import iad1tya.echo.music.ui.component.Material3SettingsGroup
 import iad1tya.echo.music.ui.component.Material3SettingsItem
 import iad1tya.echo.music.ui.screens.Screens
 import iad1tya.echo.music.ui.utils.backToMain
-import iad1tya.echo.music.echomusic.updater.getUpdateAvailableState
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -66,7 +64,6 @@ highlightKey: String? = null) {
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
     val isAndroid12OrLater = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    val isUpdateAvailable = getUpdateAvailableState(context) && iad1tya.echo.music.echomusic.updater.getAutoUpdateCheckSetting(context)
 
     var searchQuery by rememberSaveable { mutableStateOf("") }
     val searchLower = searchQuery.lowercase()
@@ -81,7 +78,6 @@ highlightKey: String? = null) {
     val privacyText = stringResource(R.string.privacy)
     val storageText = stringResource(R.string.storage)
     val backupText = stringResource(R.string.backup_restore)
-    val systemUpdateText = stringResource(R.string.system_update)
     val aboutText = stringResource(R.string.about)
 
     val scrollState = rememberScrollState()
@@ -162,28 +158,6 @@ highlightKey: String? = null) {
                         },
                         title = { Text(aiLyricsText) },
                         onClick = { navController.navigate("settings/ai") }
-                    )
-                )
-            }
-
-            val contributeLosslessText = stringResource(R.string.contribute_to_lossless)
-            if (contributeLosslessText.lowercase().contains(searchLower)) {
-                add(
-                    Material3SettingsItem(
-                        isHighlighted = (highlightKey == contributeLosslessText),
-                        customIcon = {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_apple_lossless),
-                                contentDescription = null,
-                                modifier = Modifier.size(24.dp),
-                                tint = if (highlightKey == contributeLosslessText)
-                                    MaterialTheme.colorScheme.primary
-                                else
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
-                            )
-                        },
-                        title = { Text(contributeLosslessText) },
-                        onClick = { navController.navigate("settings/lossless") }
                     )
                 )
             }
@@ -276,68 +250,17 @@ highlightKey: String? = null) {
                     )
                 )
             }
-            if (systemUpdateText.lowercase().contains(searchLower)) {
-                add(
-                    Material3SettingsItem(
-    isHighlighted = (highlightKey == systemUpdateText),
-                        icon = painterResource(if (isUpdateAvailable) R.drawable.ic_launcher_nobg else R.drawable.update),
-                        title = { Text(systemUpdateText) },
-                        description = if (isUpdateAvailable) {
-                            {
-                                Text(
-                                    text = stringResource(R.string.update_available),
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        } else null,
-                        onClick = { navController.navigate("settings/update") }
-                    )
-                )
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if ("supported links".contains(searchLower)) {
-                    add(
-                        Material3SettingsItem(
-                            isHighlighted = (highlightKey == "supported links"),
-                            icon = painterResource(R.drawable.link),
-                            title = { Text("Supported Links") },
-                            onClick = {
-                                try {
-                                    val intent = Intent(
-                                        Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS,
-                                        Uri.parse("package:${context.packageName}")
-                                    )
-                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    when (e) {
-                                        is ActivityNotFoundException, is SecurityException -> {
-                                            Toast.makeText(context, "Cannot open settings", Toast.LENGTH_SHORT).show()
-                                        }
-                                        else -> {
-                                            Toast.makeText(context, "An error occurred", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
-                            }
-                        )
-                    )
-                }
-            }
-            if (aboutText.lowercase().contains(searchLower)) {
-                add(
-                    Material3SettingsItem(
-    isHighlighted = (highlightKey == aboutText),
-                        icon = painterResource(R.drawable.info),
-                        title = { Text(aboutText) },
-                        onClick = { navController.navigate("settings/about") }
-                    )
-                )
-            }
         }
 
         val finalItemsList = if (searchQuery.isNotEmpty()) {
             val subSettings = getAllSearchableSettings()
+                .filterNot { (_, _, route) ->
+                    route.startsWith("settings/update") ||
+                        route.startsWith("settings/lossless") ||
+                        route.startsWith("settings/about") ||
+                        route.startsWith("settings/changelog") ||
+                        route.startsWith("settings/commits")
+                }
 
             val matchedSubSettings = subSettings
                 .filter { it.first.lowercase().contains(searchLower) }

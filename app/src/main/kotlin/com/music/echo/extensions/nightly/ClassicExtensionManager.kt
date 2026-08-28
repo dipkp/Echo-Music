@@ -13,7 +13,11 @@ import android.util.Base64
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import com.music.innertube.models.Artist
+import com.music.innertube.models.AlbumItem
+import com.music.innertube.models.ArtistItem
+import com.music.innertube.models.PlaylistItem
 import com.music.innertube.models.SongItem
+import com.music.innertube.models.YTItem
 import com.music.innertube.pages.HomePage
 import com.music.innertube.pages.SearchSummary
 import com.music.innertube.pages.SearchSummaryPage
@@ -24,24 +28,36 @@ import dev.brahmkshatriya.echo.common.MiscExtension
 import dev.brahmkshatriya.echo.common.MusicExtension
 import dev.brahmkshatriya.echo.common.TrackerExtension
 import dev.brahmkshatriya.echo.common.clients.ExtensionClient
+import dev.brahmkshatriya.echo.common.clients.AlbumClient
+import dev.brahmkshatriya.echo.common.clients.ArtistClient
 import dev.brahmkshatriya.echo.common.clients.HomeFeedClient
 import dev.brahmkshatriya.echo.common.clients.LoginClient
 import dev.brahmkshatriya.echo.common.clients.SearchFeedClient
+import dev.brahmkshatriya.echo.common.clients.ShareClient
 import dev.brahmkshatriya.echo.common.clients.SettingsChangeListenerClient
 import dev.brahmkshatriya.echo.common.clients.TrackClient
 import dev.brahmkshatriya.echo.common.clients.TrackerClient
 import dev.brahmkshatriya.echo.common.clients.LyricsClient
+import dev.brahmkshatriya.echo.common.clients.LikeClient
+import dev.brahmkshatriya.echo.common.clients.PlaylistClient
+import dev.brahmkshatriya.echo.common.clients.RadioClient
 import dev.brahmkshatriya.echo.common.helpers.Injectable
 import dev.brahmkshatriya.echo.common.models.ExtensionType
+import dev.brahmkshatriya.echo.common.models.EchoMediaItem
 import dev.brahmkshatriya.echo.common.models.ImageHolder
 import dev.brahmkshatriya.echo.common.models.ImportType
 import dev.brahmkshatriya.echo.common.models.Metadata
 import dev.brahmkshatriya.echo.common.models.Message
 import dev.brahmkshatriya.echo.common.models.NetworkConnection
+import dev.brahmkshatriya.echo.common.models.Lyrics
 import dev.brahmkshatriya.echo.common.models.Shelf
 import dev.brahmkshatriya.echo.common.models.Streamable
 import dev.brahmkshatriya.echo.common.models.Track
 import dev.brahmkshatriya.echo.common.models.User
+import dev.brahmkshatriya.echo.common.models.Album as EchoAlbum
+import dev.brahmkshatriya.echo.common.models.Artist as EchoArtist
+import dev.brahmkshatriya.echo.common.models.Playlist as EchoPlaylist
+import dev.brahmkshatriya.echo.common.models.Radio as EchoRadio
 import dev.brahmkshatriya.echo.common.providers.GlobalSettingsProvider
 import dev.brahmkshatriya.echo.common.providers.MessageFlowProvider
 import dev.brahmkshatriya.echo.common.providers.MetadataProvider
@@ -80,6 +96,8 @@ import java.util.zip.ZipFile
  * navigation, player UI, themes, and resources are not used by the classic application.
  */
 class ClassicExtensionManager private constructor(private val context: Context) {
+
+    data class ClassicLyrics(val text: String, val provider: String)
 
     data class Entry(
         val file: File,
@@ -133,6 +151,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
 
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val tracks = context.getSharedPreferences(TRACKS, Context.MODE_PRIVATE)
+    private val mediaItems = context.getSharedPreferences(MEDIA_ITEMS, Context.MODE_PRIVATE)
     private val extensionDirectory = File(context.filesDir, "extensions").apply { mkdirs() }
     private val mutex = Mutex()
     private val resolvedStreams = ConcurrentHashMap<String, CachedResolvedStream>()
@@ -350,7 +369,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         val data = feed.getPagedData(feed.notSortTabs.firstOrNull())
         val shelves = data.pagedData.loadPage(null).data
         val summaries = shelves.mapNotNull { shelf ->
-            val extensionTracks = shelf.tracks()
+            val extensionTracks = shelf.mediaItems().filterIsInstance<Track>()
             val items = extensionTracks.map { track -> track.toClassicSong(entry.id) }
             if (items.isEmpty()) null else SearchSummary(shelf.title, items)
         }
@@ -369,7 +388,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         HomePage(
             chips = null,
             sections = shelves.mapNotNull { shelf ->
-                val items = shelf.tracks().map { it.toClassicSong(entry.id) }
+                val items = shelf.mediaItems().mapNotNull { it.toClassicItem(entry.id) }
                 if (items.isEmpty()) null else HomePage.Section(
                     title = shelf.title,
                     label = (shelf as? Shelf.Lists<*>)?.subtitle,
@@ -380,6 +399,150 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             },
             continuation = null,
         )
+    }
+
+    /** Loads a playable queue when a classic Home card represents an extension collection. */
+    suspend fun loadCollectionTracks(collectionId: String): List<SongItem> = withContext(Dispatchers.IO) {
+        require(isExtensionCollectionId(collectionId)) { "Not an extension collection" }
+        ensureLoaded()
+        refreshNetworkState()
+        val extensionId = extensionIdFrom(collectionId)
+        val entry = _entries.value.firstOrNull {
+            it.id == extensionId && it.client != null && isEnabled(it.id)
+        } ?: error("Extension is unavailable: $extensionId")
+        val stored = mediaItems.getString(collectionId, null)
+            ?: error("Collection metadata is unavailable; refresh Home")
+        val item = json.decodeFromString<EchoMediaItem>(stored)
+        val loadedTracks = when (item) {
+            is Track -> listOf(item)
+            is EchoAlbum -> {
+                val client = entry.client as? AlbumClient
+                    ?: error("${entry.metadata?.name ?: entry.id} cannot open albums")
+                val loaded = client.loadAlbum(item)
+                client.loadTracks(loaded)?.firstPage().orEmpty()
+            }
+            is EchoPlaylist -> {
+                val client = entry.client as? PlaylistClient
+                    ?: error("${entry.metadata?.name ?: entry.id} cannot open playlists")
+                client.loadTracks(client.loadPlaylist(item)).firstPage()
+            }
+            is EchoRadio -> {
+                val client = entry.client as? RadioClient
+                    ?: error("${entry.metadata?.name ?: entry.id} cannot open radio")
+                client.loadTracks(client.loadRadio(item)).firstPage()
+            }
+            is EchoArtist -> {
+                val client = entry.client as? ArtistClient
+                    ?: error("${entry.metadata?.name ?: entry.id} cannot open artists")
+                val feed = client.loadFeed(client.loadArtist(item))
+                val data = feed.getPagedData(feed.notSortTabs.firstOrNull())
+                data.pagedData.loadPage(null).data.flatMap { it.mediaItems() }.filterIsInstance<Track>()
+            }
+            else -> emptyList()
+        }
+        loadedTracks.distinctBy { it.id }.map { it.toClassicSong(extensionId) }
+    }
+
+    /** Builds the player radio/continuation queue through the track's owning extension. */
+    suspend fun loadRadioTracks(mediaId: String): List<SongItem> = withContext(Dispatchers.IO) {
+        val extensionMediaId = if (isExtensionMediaId(mediaId)) {
+            mediaId
+        } else {
+            classicTrackMappings[mediaId] ?: return@withContext emptyList()
+        }
+        ensureLoaded()
+        refreshNetworkState()
+        val extensionId = extensionIdFrom(extensionMediaId)
+        val entry = _entries.value.firstOrNull {
+            it.id == extensionId && it.client != null && isEnabled(it.id)
+        } ?: return@withContext emptyList()
+        val client = entry.client as? RadioClient ?: return@withContext emptyList()
+        val stored = tracks.getString(extensionMediaId, null) ?: return@withContext emptyList()
+        val track = json.decodeFromString<Track>(stored)
+        if (!track.isRadioSupported) return@withContext emptyList()
+        val radio = client.loadRadio(client.radio(track, null))
+        client.loadTracks(radio).firstPage()
+            .distinctBy { it.id }
+            .map { it.toClassicSong(extensionId) }
+    }
+
+    suspend fun shareTrack(mediaId: String): String? = withContext(Dispatchers.IO) {
+        val extensionMediaId = if (isExtensionMediaId(mediaId)) mediaId
+            else classicTrackMappings[mediaId] ?: return@withContext null
+        ensureLoaded()
+        val extensionId = extensionIdFrom(extensionMediaId)
+        val entry = _entries.value.firstOrNull {
+            it.id == extensionId && it.client != null && isEnabled(it.id)
+        } ?: return@withContext null
+        val client = entry.client as? ShareClient ?: return@withContext null
+        val stored = tracks.getString(extensionMediaId, null) ?: return@withContext null
+        val track = json.decodeFromString<Track>(stored)
+        if (!track.isShareable) return@withContext null
+        client.onShare(track)
+    }
+
+    suspend fun setTrackLiked(mediaId: String, liked: Boolean) = withContext(Dispatchers.IO) {
+        if (!isExtensionMediaId(mediaId)) return@withContext
+        ensureLoaded()
+        val extensionId = extensionIdFrom(mediaId)
+        val entry = _entries.value.firstOrNull { it.id == extensionId && it.client != null }
+            ?: return@withContext
+        val client = entry.client as? LikeClient ?: return@withContext
+        val stored = tracks.getString(mediaId, null) ?: return@withContext
+        val track = json.decodeFromString<Track>(stored)
+        if (track.isLikeable) client.likeItem(track, liked)
+    }
+
+    /** Loads lyrics through the installed Nightly extension graph before classic providers. */
+    suspend fun loadLyrics(mediaId: String): ClassicLyrics? = withContext(Dispatchers.IO) {
+        if (!isExtensionMediaId(mediaId)) return@withContext null
+        ensureLoaded()
+        refreshNetworkState()
+        val extensionId = extensionIdFrom(mediaId)
+        val stored = tracks.getString(mediaId, null) ?: return@withContext null
+        val track = json.decodeFromString<Track>(stored)
+        val candidates = buildList {
+            selectedEntry()?.takeIf { it.client is LyricsClient }?.let(::add)
+            addAll(_entries.value.filter {
+                it.metadata?.type == ExtensionType.LYRICS &&
+                    it.client is LyricsClient && isEnabled(it.id)
+            })
+        }.distinctBy { it.id }
+
+        candidates.firstNotNullOfOrNull { entry ->
+            runCatching {
+                val client = entry.client as LyricsClient
+                client.searchTrackLyrics(extensionId, track).firstPage().firstNotNullOfOrNull { result ->
+                    val loaded = if (result.lyrics == null) client.loadLyrics(result) else result
+                    loaded.lyrics?.toClassicLyricsText()?.takeIf(String::isNotBlank)?.let { text ->
+                        ClassicLyrics(text, entry.metadata?.name ?: "Extension")
+                    }
+                }
+            }.getOrNull()
+        }
+    }
+
+    private fun Lyrics.Lyric.toClassicLyricsText(): String = when (this) {
+        is Lyrics.Simple -> text
+        is Lyrics.Timed -> list.joinToString("\n") { item ->
+            "${item.startTime.toLrcTimestamp()}${item.text}"
+        }
+        is Lyrics.WordByWord -> list.joinToString("\n") { words ->
+            val start = words.firstOrNull()?.startTime ?: 0L
+            "${start.toLrcTimestamp()}${words.joinToString("") { it.text }}"
+        }
+    }
+
+    private fun Long.toLrcTimestamp(): String {
+        val minutes = this / 60_000
+        val seconds = (this % 60_000) / 1_000
+        val hundredths = (this % 1_000) / 10
+        return "[%02d:%02d.%02d]".format(Locale.ROOT, minutes, seconds, hundredths)
+    }
+
+    private suspend fun <T : Any> dev.brahmkshatriya.echo.common.models.Feed<T>.firstPage(): List<T> {
+        val data = getPagedData(notSortTabs.firstOrNull())
+        return data.pagedData.loadPage(null).data
     }
 
     suspend fun resolve(mediaId: String): ResolvedStream = withContext(Dispatchers.IO) {
@@ -431,6 +594,25 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     fun invalidate(mediaId: String) {
         resolvedStreams.remove(mediaId)
         classicTrackMappings.remove(mediaId)?.let(resolvedStreams::remove)
+    }
+
+    /**
+     * Media3 creates fresh DataSpecs for HLS/DASH child requests and does not always retain the
+     * media id/custom data from the manifest request. Recover the already-resolved extension
+     * source so those requests keep the extension's authentication headers.
+     */
+    fun resolvedForRequest(uri: Uri): ResolvedStream? {
+        val now = SystemClock.elapsedRealtime()
+        return resolvedStreams.values.asSequence()
+            .filter { now - it.createdAt < RESOLVED_STREAM_TTL_MS }
+            .map { it.stream }
+            .filter { it.source is Streamable.Source.Http }
+            .firstOrNull { stream ->
+                val root = stream.uri
+                root.scheme.equals(uri.scheme, ignoreCase = true) &&
+                    root.host.equals(uri.host, ignoreCase = true) &&
+                    (root.port == uri.port || root.port == -1 || uri.port == -1)
+            }
     }
 
     /** Resolves a song shown by the classic UI through the selected extension backend. */
@@ -649,12 +831,59 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         )
     }
 
-    private fun Shelf.tracks(): List<Track> = when (this) {
-        is Shelf.Item -> listOfNotNull(media as? Track)
+    private fun Shelf.mediaItems(): List<EchoMediaItem> = when (this) {
+        is Shelf.Item -> listOf(media)
         is Shelf.Lists.Tracks -> list
-        is Shelf.Lists.Items -> list.filterIsInstance<Track>()
+        is Shelf.Lists.Items -> list
         is Shelf.Lists.Categories -> emptyList()
         is Shelf.Category -> emptyList()
+    }
+
+    private fun EchoMediaItem.toClassicItem(extensionId: String): YTItem? {
+        if (this is Track) return toClassicSong(extensionId)
+        val id = collectionMediaId(extensionId, this)
+        mediaItems.edit().putString(id, json.encodeToString<EchoMediaItem>(this)).apply()
+        val image = cover.toClassicUrl().orEmpty()
+        return when (this) {
+            is EchoAlbum -> AlbumItem(
+                browseId = id,
+                playlistId = id,
+                title = title,
+                artists = artists.map { Artist(it.name, null) },
+                year = date?.year,
+                thumbnail = image,
+                explicit = isExplicit,
+                description = description,
+            )
+            is EchoPlaylist -> PlaylistItem(
+                id = id,
+                title = title,
+                author = artists.firstOrNull()?.let { Artist(it.name, null) },
+                songCountText = trackCount?.let { "$it tracks" },
+                thumbnail = image,
+                playEndpoint = null,
+                shuffleEndpoint = null,
+                radioEndpoint = null,
+            )
+            is EchoArtist -> ArtistItem(
+                id = id,
+                title = title,
+                thumbnail = image,
+                shuffleEndpoint = null,
+                radioEndpoint = null,
+            )
+            is EchoRadio -> PlaylistItem(
+                id = id,
+                title = title,
+                author = artists.firstOrNull()?.let { Artist(it.name, null) },
+                songCountText = trackCount?.let { "$it tracks" },
+                thumbnail = image,
+                playEndpoint = null,
+                shuffleEndpoint = null,
+                radioEndpoint = null,
+            )
+            else -> null
+        }
     }
 
     private fun Track.toClassicSong(extensionId: String): SongItem {
@@ -725,9 +954,11 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     companion object {
         private const val PREFERENCES = "classic_extensions"
         private const val TRACKS = "classic_extension_tracks"
+        private const val MEDIA_ITEMS = "classic_extension_media_items"
         private const val SELECTED_MUSIC_EXTENSION = "selected_music_extension"
         private const val EXTENSION_FEATURE_PREFIX = "dev.brahmkshatriya.echo."
         private const val MEDIA_PREFIX = "echoext:"
+        private const val COLLECTION_PREFIX = "echoextitem:"
         private const val RESOLVED_STREAM_TTL_MS = 5 * 60 * 1000L
 
         @Volatile
@@ -740,6 +971,8 @@ class ClassicExtensionManager private constructor(private val context: Context) 
 
         fun isExtensionMediaId(mediaId: String): Boolean = mediaId.startsWith(MEDIA_PREFIX)
 
+        fun isExtensionCollectionId(mediaId: String): Boolean = mediaId.startsWith(COLLECTION_PREFIX)
+
         private fun enabledKey(id: String) = "enabled_$id"
         private fun userKey(id: String) = "user_$id"
 
@@ -750,8 +983,18 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             return "$MEDIA_PREFIX$extensionId:$encoded"
         }
 
-        private fun extensionIdFrom(mediaId: String): String =
-            mediaId.removePrefix(MEDIA_PREFIX).substringBefore(':')
+        private fun collectionMediaId(extensionId: String, item: EchoMediaItem): String {
+            val raw = "${item::class.simpleName}:${item.id}"
+            val encoded = Base64.encodeToString(
+                raw.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+            )
+            return "$COLLECTION_PREFIX$extensionId:$encoded"
+        }
+
+        private fun extensionIdFrom(mediaId: String): String = mediaId
+            .removePrefix(MEDIA_PREFIX)
+            .removePrefix(COLLECTION_PREFIX)
+            .substringBefore(':')
 
         private fun extractLibraries(metadata: Metadata, context: Context): File {
             val root = File(context.codeCacheDir, "extension-libs/${metadata.id}")

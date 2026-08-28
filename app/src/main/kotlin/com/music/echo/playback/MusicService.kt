@@ -156,6 +156,7 @@ import iad1tya.echo.music.extensions.toPersistQueue
 import iad1tya.echo.music.extensions.toQueue
 import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
 import iad1tya.echo.music.extensions.nightly.ClassicExtensionDataSource
+import dev.brahmkshatriya.echo.common.models.Streamable
 import iad1tya.echo.music.echomusic.updater.downloadmanager.EchoNotificationProvider
 import iad1tya.echo.music.lyrics.LyricsHelper
 import iad1tya.echo.music.models.PersistPlayerState
@@ -167,6 +168,7 @@ import iad1tya.echo.music.playback.audio.SilenceDetectorAudioProcessor
 import iad1tya.echo.music.playback.queues.EmptyQueue
 import iad1tya.echo.music.playback.queues.Queue
 import iad1tya.echo.music.playback.queues.YouTubeQueue
+import iad1tya.echo.music.playback.queues.ListQueue
 import iad1tya.echo.music.playback.queues.filterExplicit
 import iad1tya.echo.music.playback.queues.filterVideoSongs
 import iad1tya.echo.music.utils.CoilBitmapLoader
@@ -1519,6 +1521,30 @@ class MusicService :
         val currentMediaId = currentMediaMetadata.id
 
         scope.launch(SilentHandler) {
+            if (!currentMediaId.isLocalMediaId() &&
+                ClassicExtensionManager.get(this@MusicService).selectedMusicExtensionId.value != null
+            ) {
+                runCatching {
+                    ClassicExtensionManager.get(this@MusicService)
+                        .loadRadioTracks(currentMediaId)
+                        .map { it.toMediaItem() }
+                }.onSuccess { extensionItems ->
+                    if (extensionItems.isNotEmpty()) {
+                        val itemCount = player.mediaItemCount
+                        if (itemCount > currentIndex + 1) {
+                            player.removeMediaItems(currentIndex + 1, itemCount)
+                        }
+                        player.addMediaItems(currentIndex + 1, extensionItems)
+                        currentQueue = ListQueue(
+                            title = "Extension radio",
+                            items = listOf(player.currentMediaItem!!) + extensionItems,
+                        )
+                        queueTitle = "Extension radio"
+                    }
+                }.onFailure { Timber.tag(TAG).w(it, "Extension radio failed") }
+                return@launch
+            }
+
             
             val radioQueue = YouTubeQueue(
                 endpoint = WatchEndpoint(
@@ -1835,7 +1861,9 @@ class MusicService :
                 val song = it.song.toggleLike()
                 database.query {
                     update(song)
-                    syncUtils.likeSong(song)
+                    if (!ClassicExtensionManager.isExtensionMediaId(song.id)) {
+                        syncUtils.likeSong(song)
+                    }
 
                     
                     if (dataStore.get(AutoDownloadOnLikeKey, false) && song.liked) {
@@ -1853,6 +1881,12 @@ class MusicService :
                             false
                         )
                     }
+                }
+                if (ClassicExtensionManager.isExtensionMediaId(song.id)) {
+                    runCatching {
+                        ClassicExtensionManager.get(this@MusicService)
+                            .setTrackLiked(song.id, song.liked)
+                    }.onFailure { Timber.tag(TAG).w(it, "Extension like action failed") }
                 }
                 currentMediaMetadata.value = player.currentMetadata
             }
@@ -2871,7 +2905,28 @@ class MusicService :
                 DefaultDataSource.Factory(this, createCacheDataSource())
             )
         ) { dataSpec ->
-            val mediaId = dataSpec.key ?: error("No media id")
+            val extensionManager = ClassicExtensionManager.get(this@MusicService)
+            val mediaId = dataSpec.key
+
+            // Adaptive streams create manifest/segment requests without a cache key. Never send
+            // those requests through the legacy YouTube resolver: retain their URI and restore
+            // the headers supplied by the extension instead.
+            if (mediaId == null) {
+                val source = dataSpec.customData as? Streamable.Source
+                val resolved = when (source) {
+                    is Streamable.Source.Http -> ClassicExtensionManager.ResolvedStream(source)
+                    is Streamable.Source.Raw -> ClassicExtensionManager.ResolvedStream(source)
+                    null -> extensionManager.resolvedForRequest(dataSpec.uri)
+                }
+                return@Factory if (resolved == null) {
+                    dataSpec
+                } else {
+                    dataSpec.buildUpon()
+                        .setHttpRequestHeaders(dataSpec.httpRequestHeaders + resolved.headers)
+                        .setCustomData(resolved.source)
+                        .build()
+                }
+            }
             if (mediaId.isLocalMediaId()) {
                 val localUri = android.net.Uri.parse(mediaId)
                 try {
@@ -2884,7 +2939,7 @@ class MusicService :
 
             if (ClassicExtensionManager.isExtensionMediaId(mediaId)) {
                 val resolved = runBlocking(Dispatchers.IO) {
-                    ClassicExtensionManager.get(this@MusicService).resolve(mediaId)
+                    extensionManager.resolve(mediaId)
                 }
                 val isLegacySeedUri = dataSpec.uri.host == "music.youtube.com" &&
                     dataSpec.uri.getQueryParameter("v") == mediaId
@@ -2896,7 +2951,7 @@ class MusicService :
                 }
                 return@Factory dataSpec.buildUpon()
                     .setUri(playbackUri)
-                    .setHttpRequestHeaders(resolved.headers)
+                    .setHttpRequestHeaders(dataSpec.httpRequestHeaders + resolved.headers)
                     .setCustomData(resolved.source)
                     .build()
             }
@@ -2968,7 +3023,6 @@ class MusicService :
                 Timber.tag("MusicService").i("BYPASSING CACHE for $mediaId due to quality change")
             }
 
-            val extensionManager = ClassicExtensionManager.get(this@MusicService)
             if (extensionManager.selectedMusicExtensionId.value != null) {
                 val resolved = runBlocking(Dispatchers.IO) {
                     val dbSong = database.song(mediaId).firstOrNull()
@@ -2984,7 +3038,7 @@ class MusicService :
                 Timber.tag("MusicService").i("EXTENSION STREAM: $mediaId")
                 return@Factory dataSpec.buildUpon()
                     .setUri(resolved.uri)
-                    .setHttpRequestHeaders(resolved.headers)
+                    .setHttpRequestHeaders(dataSpec.httpRequestHeaders + resolved.headers)
                     .setCustomData(resolved.source)
                     .build()
             }

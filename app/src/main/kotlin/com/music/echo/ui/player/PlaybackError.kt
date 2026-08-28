@@ -42,18 +42,24 @@ fun PlaybackError(
     
     
     
-    val isAgeRestricted = rawErrorMessage.contains("age", ignoreCase = true) ||
+    val isAgeRestricted = rawErrorMessage.contains("age-restricted", ignoreCase = true) ||
             rawErrorMessage.contains("Sign in to confirm your age", ignoreCase = true) ||
             rawErrorMessage.contains("LOGIN_REQUIRED", ignoreCase = true) ||
-            rawErrorMessage.contains("confirm your age", ignoreCase = true) ||
-            rawErrorMessage.contains("403", ignoreCase = true) ||
-            rawErrorMessage.contains("Response code: 403", ignoreCase = true) ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+            rawErrorMessage.contains("confirm your age", ignoreCase = true)
     
     val errorMessage = if (isAgeRestricted) {
-        "This track is unplayable or age-restricted on YouTube Music. We are working on fixing this issue."
+        "This track is age-restricted. Sign in through the active music extension and retry."
     } else {
-        rawErrorMessage
+        when (error.errorCode) {
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
+                "The extension stream was rejected or expired. Retry to request a fresh stream."
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+                "The extension could not reach its music service. Check your connection and retry."
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED ->
+                "The extension could not open this stream. Retry to request a fresh stream."
+            else -> rawErrorMessage
+        }
     }
     
     Column(

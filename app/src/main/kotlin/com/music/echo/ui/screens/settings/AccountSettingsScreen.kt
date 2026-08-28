@@ -1,431 +1,184 @@
-
-
 package iad1tya.echo.music.ui.screens.settings
 
-import androidx.compose.foundation.layout.Arrangement
+import android.widget.Toast
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarScrollBehavior
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
-import com.music.innertube.YouTube
-import com.music.innertube.utils.parseCookieString
+import dev.brahmkshatriya.echo.common.clients.LoginClient
 import iad1tya.echo.music.LocalPlayerAwareWindowInsets
-import iad1tya.echo.music.constants.*
-import iad1tya.echo.music.ui.component.*
-import iad1tya.echo.music.ui.utils.backToMain
-import iad1tya.echo.music.utils.rememberPreference
-import iad1tya.echo.music.viewmodels.AccountSettingsViewModel
-import iad1tya.echo.music.viewmodels.HomeViewModel
 import iad1tya.echo.music.R
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
+import iad1tya.echo.music.ui.component.IconButton
+import iad1tya.echo.music.ui.component.Material3SettingsGroup
+import iad1tya.echo.music.ui.component.Material3SettingsItem
+import iad1tya.echo.music.ui.utils.backToMain
+import kotlinx.coroutines.launch
+
+/** Account center backed only by installed Echo Nightly-compatible extensions. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountSettingsScreen(
     navController: NavController,
-    scrollBehavior: TopAppBarScrollBehavior, highlightKey: String? = null) {
-    val scrollState = androidx.compose.foundation.rememberScrollState()
-
+    scrollBehavior: TopAppBarScrollBehavior,
+    @Suppress("UNUSED_PARAMETER") highlightKey: String? = null,
+) {
     val context = LocalContext.current
-    val uriHandler = LocalUriHandler.current
+    val manager = remember(context) { ClassicExtensionManager.get(context) }
+    val entries by manager.entries.collectAsState()
+    val users by manager.loginUsers.collectAsState()
+    val selectedId by manager.selectedMusicExtensionId.collectAsState()
+    val scope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
 
-    val (accountNamePref, _) = rememberPreference(AccountNameKey, "")
-    val (accountEmail, _) = rememberPreference(AccountEmailKey, "")
-    val (accountChannelHandle, _) = rememberPreference(AccountChannelHandleKey, "")
-    val (innerTubeCookie, onInnerTubeCookieChange) = rememberPreference(InnerTubeCookieKey, "")
-    val (visitorData, _) = rememberPreference(VisitorDataKey, "")
-    val (dataSyncId, _) = rememberPreference(DataSyncIdKey, "")
+    LaunchedEffect(manager) { manager.ensureLoaded() }
 
-    val (listenBrainzEnabled, onListenBrainzEnabledChange) = rememberPreference(ListenBrainzEnabledKey, false)
-    val (listenBrainzToken, onListenBrainzTokenChange) = rememberPreference(ListenBrainzTokenKey, "")
+    Column(
+        Modifier
+            .windowInsetsPadding(LocalPlayerAwareWindowInsets.current.only(WindowInsetsSides.Horizontal))
+            .verticalScroll(scrollState)
+            .padding(horizontal = 16.dp),
+    ) {
+        Spacer(Modifier.windowInsetsPadding(LocalPlayerAwareWindowInsets.current.only(WindowInsetsSides.Top)))
+        Text(
+            text = "Extension accounts",
+            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.SemiBold),
+            modifier = Modifier.padding(start = 8.dp, top = 24.dp, bottom = 16.dp),
+        )
 
-    val isLoggedIn = remember(innerTubeCookie) {
-        "SAPISID" in parseCookieString(innerTubeCookie)
-    }
-    val (useLoginForBrowse, onUseLoginForBrowseChange) = rememberPreference(UseLoginForBrowse, true)
-    val (ytmSync, onYtmSyncChange) = rememberPreference(YtmSyncKey, true)
-
-    val homeViewModel: HomeViewModel = hiltViewModel()
-    val accountSettingsViewModel: AccountSettingsViewModel = hiltViewModel()
-    val accountName by homeViewModel.accountName.collectAsState()
-    val accountImageUrl by homeViewModel.accountImageUrl.collectAsState()
-
-    var showToken by remember { mutableStateOf(false) }
-    var showTokenEditor by remember { mutableStateOf(false) }
-    var showLogoutDialog by remember { mutableStateOf(false) }
-    var showListenBrainzTokenEditor by remember { mutableStateOf(false) }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.account)) },
-                navigationIcon = {
-                    IconButton(
-                        onClick = navController::navigateUp,
-                        onLongClick = navController::backToMain
-                    ) {
-                        Icon(
-                            painterResource(R.drawable.arrow_back),
-                            contentDescription = null
-                        )
-                    }
-                },
-                scrollBehavior = scrollBehavior
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .windowInsetsPadding(
-                    LocalPlayerAwareWindowInsets.current.only(WindowInsetsSides.Horizontal)
-                )
-                .verticalScroll(scrollState)
-                .padding(horizontal = 16.dp)
-        ) {
-            
-            Material3SettingsGroup(scrollState = scrollState, 
-                title = stringResource(R.string.settings),
-                items = listOf(
+        val accountEntries = entries.filter { it.client is LoginClient && it.error == null }
+        Material3SettingsGroup(
+            title = "Music services",
+            scrollState = scrollState,
+            items = if (accountEntries.isEmpty()) {
+                listOf(
                     Material3SettingsItem(
-                        icon = if (isLoggedIn && !accountImageUrl.isNullOrBlank()) null else painterResource(R.drawable.login),
-                        title = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (isLoggedIn && !accountImageUrl.isNullOrBlank()) {
-                                    AsyncImage(
-                                        model = accountImageUrl,
-                                        contentDescription = null,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .size(40.dp)
-                                            .clip(CircleShape)
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                }
-                                Text(
-                                    text = if (isLoggedIn) accountName else stringResource(R.string.login),
-                                    color = MaterialTheme.colorScheme.primary,
-                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
-                                )
-                            }
-                        },
-                        trailingContent = if (isLoggedIn) ({
-                            OutlinedButton(
-
-
-
-
-                                onClick = {
-                                    showLogoutDialog = true
-                                },
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                                    contentColor = MaterialTheme.colorScheme.onSurface
-                                )
-                            ) {
-                                Text(stringResource(R.string.action_logout))
-                            }
-                        }) else null,
-                        onClick = {
-                            if (isLoggedIn) navController.navigate("account")
-                            else navController.navigate("login")
-                        }
+                        customIcon = { Icon(Icons.Outlined.Extension, contentDescription = null) },
+                        title = { Text("No account extension installed") },
+                        description = { Text("Install YouTube Music, Spotify, or another login-capable extension") },
+                        onClick = { navController.navigate("settings/extensions") },
                     )
                 )
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            
-            Material3SettingsGroup(scrollState = scrollState, 
-                title = stringResource(R.string.advanced_login),
-                items = listOf(
-                    Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.advanced_login) || highlightKey == stringResource(R.string.token_shown) || highlightKey == stringResource(R.string.token_hidden)),
-                        icon = painterResource(R.drawable.token),
-                        title = {
-                            Text(
-                                when {
-                                    !isLoggedIn -> stringResource(R.string.advanced_login)
-                                    showToken -> stringResource(R.string.token_shown)
-                                    else -> stringResource(R.string.token_hidden)
-                                }
+            } else accountEntries.map { entry ->
+                val metadata = entry.metadata
+                val user = users[entry.id]
+                val image = manager.imageUrl(user?.cover ?: metadata?.icon)
+                Material3SettingsItem(
+                    customIcon = {
+                        if (image.isNullOrBlank()) {
+                            Icon(Icons.Outlined.AccountCircle, contentDescription = null)
+                        } else {
+                            AsyncImage(
+                                model = image,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.size(40.dp).clip(CircleShape),
                             )
-                        },
-                        onClick = {
-                            if (!isLoggedIn) showTokenEditor = true
-                            else if (!showToken) showToken = true
-                            else showTokenEditor = true
                         }
-                    )
-                )
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            
-            if (isLoggedIn) {
-                Material3SettingsGroup(scrollState = scrollState, 
-                    title = stringResource(R.string.settings_section_player_content),
-                    items = listOf(
-                        Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.more_content)),
-                            icon = painterResource(R.drawable.add_circle),
-                            title = { Text(stringResource(R.string.more_content)) },
-                            trailingContent = {
-                                Switch(
-                                    checked = useLoginForBrowse,
-                                    onCheckedChange = {
-                                        YouTube.useLoginForBrowse = it
-                                        onUseLoginForBrowseChange(it)
-                                    },
-                                    thumbContent = {
-                                        Icon(
-                                            painter = painterResource(
-                                                id = if (useLoginForBrowse) R.drawable.check else R.drawable.close
-                                            ),
-                                            contentDescription = null,
-                                            modifier = Modifier.size(SwitchDefaults.IconSize),
-                                        )
-                                    }
-                                )
-                            },
-                            onClick = {
-                                val newValue = !useLoginForBrowse
-                                YouTube.useLoginForBrowse = newValue
-                                onUseLoginForBrowseChange(newValue)
+                    },
+                    title = { Text(metadata?.name ?: entry.id) },
+                    description = {
+                        Text(buildString {
+                            append(user?.name ?: "Not signed in")
+                            if (selectedId == entry.id) append(" • Active music service")
+                        })
+                    },
+                    trailingContent = {
+                        OutlinedButton(onClick = {
+                            if (user == null) {
+                                runCatching { manager.launchLogin(entry.id) }.onFailure {
+                                    Toast.makeText(context, it.message ?: "Login could not open", Toast.LENGTH_LONG).show()
+                                }
+                            } else {
+                                scope.launch {
+                                    manager.logout(entry.id)
+                                    Toast.makeText(context, "${metadata?.name ?: entry.id} disconnected", Toast.LENGTH_SHORT).show()
+                                }
                             }
-                        ),
-                        Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.yt_sync)),
-                            icon = painterResource(R.drawable.cached),
-                            title = { Text(stringResource(R.string.yt_sync)) },
-                            trailingContent = {
-                                Switch(
-                                    checked = ytmSync,
-                                    onCheckedChange = onYtmSyncChange,
-                                    thumbContent = {
-                                        Icon(
-                                            painter = painterResource(
-                                                id = if (ytmSync) R.drawable.check else R.drawable.close
-                                            ),
-                                            contentDescription = null,
-                                            modifier = Modifier.size(SwitchDefaults.IconSize),
-                                        )
-                                    }
-                                )
-                            },
-                            onClick = { onYtmSyncChange(!ytmSync) }
-                        )
-                    )
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-
-            Material3SettingsGroup(scrollState = scrollState, 
-                title = stringResource(R.string.integrations),
-                items = listOf(
-                    Material3SettingsItem(
-                        isHighlighted = (highlightKey == stringResource(R.string.discord_integration)),
-                        icon = painterResource(R.drawable.discord),
-                        title = { Text(stringResource(R.string.discord_integration)) },
-                        onClick = { navController.navigate("settings/discord") }
-                    ),
-                    Material3SettingsItem(
-                        isHighlighted = (highlightKey == stringResource(R.string.lastfm_integration)),
-                        icon = painterResource(R.drawable.ic_lastfm),
-                        title = { Text(stringResource(R.string.lastfm_integration)) },
-                        onClick = { navController.navigate("settings/lastfm") }
-                    ),
-                    Material3SettingsItem(
-                        isHighlighted = (highlightKey == stringResource(R.string.listenbrainz_scrobbling)),
-                        icon = painterResource(R.drawable.ic_listenbrainz),
-                        title = { Text(stringResource(R.string.listenbrainz_scrobbling)) },
-                        trailingContent = {
-                            Switch(
-                                checked = listenBrainzEnabled,
-                                onCheckedChange = onListenBrainzEnabledChange,
-                                thumbContent = {
-                                    Icon(
-                                        painter = painterResource(
-                                            id = if (listenBrainzEnabled) R.drawable.check else R.drawable.close
-                                        ),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(SwitchDefaults.IconSize),
-                                    )
+                        }) { Text(if (user == null) "Sign in" else "Log out") }
+                    },
+                    onClick = {
+                        scope.launch {
+                            if (entry.isMusic) {
+                                runCatching { manager.selectMusicExtension(entry.id) }.onFailure {
+                                    Toast.makeText(context, it.message ?: "Service could not be selected", Toast.LENGTH_LONG).show()
                                 }
-                            )
-                        },
-                        onClick = { onListenBrainzEnabledChange(!listenBrainzEnabled) }
-                    ),
-                    Material3SettingsItem(
-                        isHighlighted = (highlightKey == stringResource(R.string.set_listenbrainz_token)),
-                        icon = painterResource(R.drawable.edit),
-                        title = {
-                            Text(
-                                if (listenBrainzToken.isBlank()) {
-                                    stringResource(R.string.set_listenbrainz_token)
-                                } else {
-                                    "ListenBrainz token set"
-                                }
-                            )
-                        },
-                        onClick = { showListenBrainzTokenEditor = true }
-                    )
+                            }
+                            if (user == null) runCatching { manager.launchLogin(entry.id) }
+                        }
+                    },
                 )
-            )
+            },
+        )
 
+        Spacer(Modifier.height(16.dp))
+        Material3SettingsGroup(
+            title = "Manage",
+            scrollState = scrollState,
+            items = listOf(
+                Material3SettingsItem(
+                    customIcon = { Icon(Icons.Outlined.Extension, contentDescription = null) },
+                    title = { Text("Extensions and service settings") },
+                    description = { Text("Install, select, and configure backend extensions") },
+                    onClick = { navController.navigate("settings/extensions") },
+                ),
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.discord),
+                    title = { Text(stringResource(R.string.discord_integration)) },
+                    onClick = { navController.navigate("settings/discord") },
+                ),
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.ic_lastfm),
+                    title = { Text(stringResource(R.string.lastfm_integration)) },
+                    onClick = { navController.navigate("settings/lastfm") },
+                ),
+            ),
+        )
 
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-
-        if (showTokenEditor) {
-            val text = """
-                ***INNERTUBE COOKIE*** =$innerTubeCookie
-                ***VISITOR DATA*** =$visitorData
-                ***DATASYNC ID*** =$dataSyncId
-                ***ACCOUNT NAME*** =$accountNamePref
-                ***ACCOUNT EMAIL*** =$accountEmail
-                ***ACCOUNT CHANNEL HANDLE*** =$accountChannelHandle
-            """.trimIndent()
-
-            TextFieldDialog(
-                initialTextFieldValue = TextFieldValue(text),
-                onDone = { data ->
-                    var cookie = ""
-                    var visitorDataValue = ""
-                    var dataSyncIdValue = ""
-                    var accountNameValue = ""
-                    var accountEmailValue = ""
-                    var accountChannelHandleValue = ""
-
-                    data.split("\n").forEach {
-                        when {
-                            it.startsWith("***INNERTUBE COOKIE*** =") -> cookie = it.substringAfter("=")
-                            it.startsWith("***VISITOR DATA*** =") -> visitorDataValue = it.substringAfter("=")
-                            it.startsWith("***DATASYNC ID*** =") -> dataSyncIdValue = it.substringAfter("=")
-                            it.startsWith("***ACCOUNT NAME*** =") -> accountNameValue = it.substringAfter("=")
-                            it.startsWith("***ACCOUNT EMAIL*** =") -> accountEmailValue = it.substringAfter("=")
-                            it.startsWith("***ACCOUNT CHANNEL HANDLE*** =") -> accountChannelHandleValue = it.substringAfter("=")
-                        }
-                    }
-                    accountSettingsViewModel.saveTokenAndRestart(
-                        context = context,
-                        cookie = cookie,
-                        visitorData = visitorDataValue,
-                        dataSyncId = dataSyncIdValue,
-                        accountName = accountNameValue,
-                        accountEmail = accountEmailValue,
-                        accountChannelHandle = accountChannelHandleValue,
-                    )
-                },
-                onDismiss = { showTokenEditor = false },
-                singleLine = false,
-                maxLines = 20,
-                isInputValid = { fullText ->
-                    val cookieLine = fullText.lines()
-                        .find { it.startsWith("***INNERTUBE COOKIE*** =") }
-                    val cookieValue = cookieLine?.substringAfter("***INNERTUBE COOKIE*** =")?.trim() ?: ""
-                    cookieValue.isNotEmpty() && "SAPISID" in parseCookieString(cookieValue)
-                },
-                extraContent = {
-                    InfoLabel(text = stringResource(R.string.token_adv_login_description))
-                }
-            )
-        }
-        if (showLogoutDialog) {
-            DefaultDialog(
-                onDismiss = { showLogoutDialog = false },
-                title = { Text(stringResource(R.string.logout_dialog_title)) },
-                buttons = {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                accountSettingsViewModel.logoutKeepData(context, onInnerTubeCookieChange)
-                                showLogoutDialog = false
-                                navController.navigateUp()
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(stringResource(R.string.logout_keep_data))
-                        }
-                        
-                        FilledTonalButton(
-                            onClick = {
-                                accountSettingsViewModel.logoutAndClearSyncedContent(context, onInnerTubeCookieChange)
-                                showLogoutDialog = false
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.filledTonalButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                        ) {
-                            Text(stringResource(R.string.logout_clear_data))
-                        }
-
-                        TextButton(
-                            onClick = { showLogoutDialog = false },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(stringResource(android.R.string.cancel))
-                        }
-                    }
-                }
-            ) {
-                Text(
-                    text = stringResource(R.string.logout_dialog_message),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-            }
-        }
-
-        if (showListenBrainzTokenEditor) {
-            TextFieldDialog(
-                initialTextFieldValue = TextFieldValue(listenBrainzToken),
-                onDone = { data ->
-                    onListenBrainzTokenChange(data)
-                    showListenBrainzTokenEditor = false
-                },
-                onDismiss = { showListenBrainzTokenEditor = false },
-                singleLine = true,
-                maxLines = 1,
-                isInputValid = {
-                    it.isNotEmpty()
-                },
-                extraContent = {
-                    InfoLabel(text = stringResource(R.string.listenbrainz_scrobbling_description))
-                }
-            )
-        }
-        
+        Spacer(Modifier.height(50.dp))
         Spacer(Modifier.windowInsetsPadding(LocalPlayerAwareWindowInsets.current.only(WindowInsetsSides.Bottom)))
     }
+
+    TopAppBar(
+        title = { Text("Extension accounts") },
+        navigationIcon = {
+            IconButton(onClick = navController::navigateUp, onLongClick = navController::backToMain) {
+                Icon(painterResource(R.drawable.arrow_back), contentDescription = null)
+            }
+        },
+        scrollBehavior = scrollBehavior,
+    )
 }

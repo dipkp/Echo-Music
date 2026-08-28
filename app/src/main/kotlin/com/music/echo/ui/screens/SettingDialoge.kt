@@ -122,22 +122,10 @@ fun SettingDialoge(
                     items = buildList {
                         add(
                             Material3SettingsItem(
-                                title = { Text(if (isLoggedIn) accountName else "Anonymous") },
-                                description = { Text(if (isLoggedIn) accountEmail.ifEmpty { "Logged In" } else "Not Logged In") },
+                                title = { Text("Extension accounts") },
+                                description = { Text("Sign in to installed music extensions") },
                                 icon = painterResource(R.drawable.account),
-                                trailingContent = if (isLoggedIn && !accountImageUrl.isNullOrBlank()) {
-                                    {
-                                        AsyncImage(
-                                            model = accountImageUrl,
-                                            contentDescription = "Profile Photo",
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier
-                                                .size(40.dp)
-                                                .clip(CircleShape)
-                                        )
-                                    }
-                                } else null,
-                                onClick = { if (isLoggedIn) onNavigate("settings/account") else onNavigate("login") }
+                                onClick = { onNavigate("settings/account") }
                             )
                         )
                         add(
@@ -157,67 +145,8 @@ fun SettingDialoge(
                                 }
                             )
                         )
-                        if (audioQuality == AudioQuality.LOSSLESS) {
-                            add(
-                                Material3SettingsItem(
-                                    title = { Text("Donate for lossless music") },
-                                    customIcon = {
-                                        Text(
-                                            text = "$",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
-                                        )
-                                    },
-                                    onClick = {
-                                        uriHandler.openUri("https://support.iad1tya.cyou")
-                                        onDismissRequest()
-                                    }
-                                )
-                            )
-                        }
                     }
                 )
-
-                if (isLoggedIn) {
-                    Material3SettingsGroup(
-                        title = "Preferences",
-                        compact = true,
-                        items = listOf(
-                            Material3SettingsItem(
-                                title = { Text("Use Account for Browsing") },
-                                icon = painterResource(R.drawable.add_circle),
-                                trailingContent = {
-                                    Switch(
-                                        checked = useLoginForBrowse,
-                                        onCheckedChange = {
-                                            com.music.innertube.YouTube.useLoginForBrowse = it
-                                            onUseLoginForBrowseChange(it)
-                                        },
-                                        modifier = Modifier.scale(0.8f)
-                                    )
-                                },
-                                onClick = {
-                                    val newVal = !useLoginForBrowse
-                                    com.music.innertube.YouTube.useLoginForBrowse = newVal
-                                    onUseLoginForBrowseChange(newVal)
-                                }
-                            ),
-                            Material3SettingsItem(
-                                title = { Text("YouTube Music Sync") },
-                                icon = painterResource(R.drawable.cached),
-                                trailingContent = {
-                                    Switch(
-                                        checked = ytmSync,
-                                        onCheckedChange = onYtmSyncChange,
-                                        modifier = Modifier.scale(0.8f)
-                                    )
-                                },
-                                onClick = { onYtmSyncChange(!ytmSync) }
-                            )
-                        )
-                    )
-                }
 
                 Material3SettingsGroup(
                     title = "App",
@@ -227,36 +156,9 @@ fun SettingDialoge(
                             title = { Text("Settings") },
                             icon = painterResource(R.drawable.settings),
                             onClick = { onNavigate("settings") }
-                        ),
-                        Material3SettingsItem(
-                            title = { Text("About") },
-                            icon = painterResource(R.drawable.info),
-                            trailingContent = { Text(BuildConfig.VERSION_NAME, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            onClick = { onNavigate("settings/about") }
                         )
                     )
                 )
-
-                // Footer Links
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Text(
-                        text = "Privacy Policy",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = onSecondaryColor,
-                        modifier = Modifier.clickable { uriHandler.openUri("https://echomusic.fun/p/privacy-policy") }.padding(4.dp)
-                    )
-                    Text(text = " • ", color = onSecondaryColor, style = MaterialTheme.typography.bodySmall)
-                    Text(
-                        text = "Terms of Service",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = onSecondaryColor,
-                        modifier = Modifier.clickable { uriHandler.openUri("https://echomusic.fun/p/toc") }.padding(4.dp)
-                    )
-                }
             }
         }
     }

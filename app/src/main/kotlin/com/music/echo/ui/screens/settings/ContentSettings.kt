@@ -62,6 +62,7 @@ import iad1tya.echo.music.R
 import iad1tya.echo.music.constants.AppLanguageKey
 import iad1tya.echo.music.constants.ContentCountryKey
 import iad1tya.echo.music.constants.ContentLanguageKey
+import iad1tya.echo.music.constants.CustomHomeTitleKey
 import iad1tya.echo.music.constants.SuggestionRegionKey
 import iad1tya.echo.music.constants.SuggestionRegionSlugToName
 import iad1tya.echo.music.ui.screens.search.suggestions.SuggestionRegionSheet
@@ -131,6 +132,10 @@ highlightKey: String? = null) {
     val (appLanguage, onAppLanguageChange) = rememberPreference(key = AppLanguageKey, defaultValue = SYSTEM_DEFAULT)
 
     val (contentLanguage, onContentLanguageChange) = rememberPreference(key = ContentLanguageKey, defaultValue = "system")
+    val (customHomeTitle, onCustomHomeTitleChange) = rememberPreference(
+        key = CustomHomeTitleKey,
+        defaultValue = "",
+    )
     val (contentCountry, onContentCountryChange) = rememberPreference(key = ContentCountryKey, defaultValue = "system")
     val (suggestionRegion, onSuggestionRegionChange) = rememberPreference(key = SuggestionRegionKey, defaultValue = "system")
     val (hideExplicit, onHideExplicitChange) = rememberPreference(key = HideExplicitKey, defaultValue = false)
@@ -172,8 +177,38 @@ highlightKey: String? = null) {
     val (albumCanvasEnabled, onAlbumCanvasEnabledChange) = rememberPreference(key = AlbumCanvasEnabledKey, defaultValue = false)
 
     var showPlaybackLogsDialog by rememberSaveable { mutableStateOf(false) }
+    var showHomeTitleDialog by rememberSaveable { mutableStateOf(false) }
     var showSuggestionSheet by rememberSaveable { mutableStateOf(false) }
     val playbackLogs by PlaybackLogManager.logs.collectAsState()
+
+    if (showHomeTitleDialog) {
+        var pendingTitle by rememberSaveable(customHomeTitle) { mutableStateOf(customHomeTitle) }
+        AlertDialog(
+            onDismissRequest = { showHomeTitleDialog = false },
+            title = { Text("Home title") },
+            text = {
+                OutlinedTextField(
+                    value = pendingTitle,
+                    onValueChange = { pendingTitle = it.take(32) },
+                    singleLine = true,
+                    label = { Text("Name shown on Home") },
+                    supportingText = { Text("Leave blank to use Music") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onCustomHomeTitleChange(pendingTitle.trim())
+                    showHomeTitleDialog = false
+                }) { Text(stringResource(R.string.save)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHomeTitleDialog = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
+    }
 
     var showProxyConfigurationDialog by rememberSaveable {
         mutableStateOf(false)
@@ -610,41 +645,15 @@ highlightKey: String? = null) {
             .padding(horizontal = 16.dp),
     ) {
         Spacer(Modifier.windowInsetsPadding(LocalPlayerAwareWindowInsets.current.only(WindowInsetsSides.Top)))
-        Material3SettingsGroup(scrollState = scrollState, 
+        Material3SettingsGroup(scrollState = scrollState,
             title = stringResource(R.string.general),
             items = listOf(
                 Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.content_language)),
-                    icon = painterResource(R.drawable.language),
-                    title = { Text(stringResource(R.string.content_language)) },
-                    description = {
-                        Text(
-                            LanguageCodeToName.getOrElse(contentLanguage) { stringResource(R.string.system_default) }
-                        )
-                    },
-                    onClick = { showContentLanguageDialog = true }
-                ),
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.content_country)),
-                    icon = painterResource(R.drawable.location_on),
-                    title = { Text(stringResource(R.string.content_country)) },
-                    description = {
-                        Text(
-                            CountryCodeToName.getOrElse(contentCountry) { stringResource(R.string.system_default) }
-                        )
-                    },
-                    onClick = { showContentCountryDialog = true }
-                ),
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == "Suggestions Region"),
-                    icon = painterResource(R.drawable.globe_location_pin),
-                    title = { Text("Suggestions Region") },
-                    description = {
-                        Text(
-                            SuggestionRegionSlugToName.getOrElse(suggestionRegion) { "Global Charts" }
-                        )
-                    },
-                    onClick = { showSuggestionSheet = true }
+                    isHighlighted = (highlightKey == "Home title"),
+                    icon = painterResource(R.drawable.edit),
+                    title = { Text("Home title") },
+                    description = { Text(customHomeTitle.ifBlank { "Music" }) },
+                    onClick = { showHomeTitleDialog = true },
                 ),
                 Material3SettingsItem(
     isHighlighted = (highlightKey == stringResource(R.string.hide_explicit)),
@@ -666,214 +675,6 @@ highlightKey: String? = null) {
                         )
                     },
                     onClick = { onHideExplicitChange(!hideExplicit) }
-                ),
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.hide_video_songs)),
-                    icon = painterResource(R.drawable.slow_motion_video),
-                    title = { Text(stringResource(R.string.hide_video_songs)) },
-                    trailingContent = {
-                        Switch(
-                            checked = hideVideoSongs,
-                            onCheckedChange = onHideVideoSongsChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (hideVideoSongs) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onHideVideoSongsChange(!hideVideoSongs) }
-                ),
-
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.hide_youtube_shorts)),
-                    icon = painterResource(R.drawable.hide_image),
-                    title = { Text(stringResource(R.string.hide_youtube_shorts)) },
-                    trailingContent = {
-                        Switch(
-                            checked = hideYoutubeShorts,
-                            onCheckedChange = onHideYoutubeShortsChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (hideYoutubeShorts) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onHideYoutubeShortsChange(!hideYoutubeShorts) }
-                ),
-                Material3SettingsItem(
-                    isHighlighted = (highlightKey == stringResource(R.string.content_sponsor_block)),
-                    icon = painterResource(R.drawable.skip_next),
-                    title = { Text(stringResource(R.string.content_sponsor_block)) },
-                    description = { Text(stringResource(R.string.content_sponsor_block_desc)) },
-                    trailingContent = {
-                        Switch(
-                            checked = sponsorBlockEnabled,
-                            onCheckedChange = onSponsorBlockEnabledChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (sponsorBlockEnabled) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onSponsorBlockEnabledChange(!sponsorBlockEnabled) }
-                )
-            )
-        )
-
-        Spacer(modifier = Modifier.height(27.dp))
-
-        Material3SettingsGroup(scrollState = scrollState, 
-            title = stringResource(R.string.artist_page_settings),
-            items = listOf(
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.show_artist_description)),
-                    icon = painterResource(R.drawable.info),
-                    title = { Text(stringResource(R.string.show_artist_description)) },
-                    trailingContent = {
-                        Switch(
-                            checked = showArtistDescription,
-                            onCheckedChange = onShowArtistDescriptionChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (showArtistDescription) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onShowArtistDescriptionChange(!showArtistDescription) }
-                ),
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.show_artist_subscriber_count)),
-                    icon = painterResource(R.drawable.person),
-                    title = { Text(stringResource(R.string.show_artist_subscriber_count)) },
-                    trailingContent = {
-                        Switch(
-                            checked = showArtistSubscriberCount,
-                            onCheckedChange = onShowArtistSubscriberCountChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (showArtistSubscriberCount) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onShowArtistSubscriberCountChange(!showArtistSubscriberCount) }
-                ),
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.show_artist_monthly_listeners)),
-                    icon = painterResource(R.drawable.person),
-                    title = { Text(stringResource(R.string.show_artist_monthly_listeners)) },
-                    trailingContent = {
-                        Switch(
-                            checked = showMonthlyListeners,
-                            onCheckedChange = onShowMonthlyListenersChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (showMonthlyListeners) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onShowMonthlyListenersChange(!showMonthlyListeners) }
-                ),
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.show_artist_video)),
-                    icon = painterResource(R.drawable.slow_motion_video),
-                    title = { Text(stringResource(R.string.show_artist_video)) },
-                    description = { Text(stringResource(R.string.show_artist_video_desc)) },
-                    trailingContent = {
-                        Switch(
-                            checked = showArtistVideo,
-                            onCheckedChange = onShowArtistVideoChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (showArtistVideo) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onShowArtistVideoChange(!showArtistVideo) }
-                ),
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.show_artist_background_video)),
-                    icon = painterResource(R.drawable.slow_motion_video),
-                    title = { Text(stringResource(R.string.show_artist_background_video)) },
-                    description = { Text(stringResource(R.string.show_artist_background_video_desc)) },
-                    trailingContent = {
-                        Switch(
-                            checked = showArtistBackgroundVideo,
-                            onCheckedChange = onShowArtistBackgroundVideoChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (showArtistBackgroundVideo) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onShowArtistBackgroundVideoChange(!showArtistBackgroundVideo) }
-                )
-            )
-        )
-
-        Material3SettingsGroup(scrollState = scrollState, 
-            title = stringResource(R.string.album_text),
-            items = listOf(
-                Material3SettingsItem(
-    isHighlighted = (highlightKey == stringResource(R.string.show_album_canvas)),
-                    icon = painterResource(R.drawable.slow_motion_video),
-                    title = { Text(stringResource(R.string.show_album_canvas)) },
-                    description = { Text(stringResource(R.string.show_album_canvas_desc)) },
-                    trailingContent = {
-                        Switch(
-                            checked = albumCanvasEnabled,
-                            onCheckedChange = onAlbumCanvasEnabledChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (albumCanvasEnabled) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onAlbumCanvasEnabledChange(!albumCanvasEnabled) }
                 )
             )
         )

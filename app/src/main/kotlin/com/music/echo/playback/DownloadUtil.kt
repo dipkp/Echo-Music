@@ -32,6 +32,7 @@ import iad1tya.echo.music.db.entities.FormatEntity
 import iad1tya.echo.music.db.entities.SongEntity
 import iad1tya.echo.music.di.DownloadCache
 import iad1tya.echo.music.di.PlayerCache
+import iad1tya.echo.music.extensions.nightly.ClassicExtensionManager
 import iad1tya.echo.music.ui.utils.resize
 import iad1tya.echo.music.utils.YTPlayerUtils
 import iad1tya.echo.music.utils.enumPreference
@@ -100,7 +101,49 @@ constructor(
                 )
             )
         ) { dataSpec ->
-            val mediaId = dataSpec.key ?: error("No media id")
+            val extensionManager = ClassicExtensionManager.get(context)
+            val mediaId = dataSpec.key
+
+            // Manifest-based extension streams create child requests without the original
+            // cache key. Keep the child URI and restore the selected extension's auth headers.
+            if (mediaId == null) {
+                val resolved = extensionManager.resolvedForRequest(dataSpec.uri)
+                return@Factory if (resolved == null) dataSpec else dataSpec.buildUpon()
+                    .setHttpRequestHeaders(dataSpec.httpRequestHeaders + resolved.headers)
+                    .build()
+            }
+
+            // Downloads must use the exact same Nightly extension backend as playback. The old
+            // code always called the legacy YouTube resolver, which is why extension tracks could
+            // play/search but immediately failed when the download button was pressed.
+            if (ClassicExtensionManager.isExtensionMediaId(mediaId)) {
+                val resolved = runBlocking(Dispatchers.IO) {
+                    extensionManager.resolve(mediaId)
+                }
+                return@Factory dataSpec.buildUpon()
+                    .setUri(resolved.uri)
+                    .setHttpRequestHeaders(dataSpec.httpRequestHeaders + resolved.headers)
+                    .build()
+            }
+
+            // Spotify imports and existing classic-library rows keep their original database
+            // ids. Match them through the selected extension exactly like MusicService does,
+            // so downloading never falls back to the expired original Echo/YouTube resolver.
+            if (extensionManager.selectedMusicExtensionId.value != null) {
+                val resolved = runBlocking(Dispatchers.IO) {
+                    val songData = database.getSongByIdBlocking(mediaId)
+                    val title = songData?.song?.title ?: error("Song title is unavailable")
+                    extensionManager.resolveClassicSong(
+                        classicMediaId = mediaId,
+                        title = title,
+                        artists = songData.artists.map { it.name },
+                    )
+                }
+                return@Factory dataSpec.buildUpon()
+                    .setUri(resolved.uri)
+                    .setHttpRequestHeaders(dataSpec.httpRequestHeaders + resolved.headers)
+                    .build()
+            }
 
             songUrlCache["${mediaId}_${downloadQuality.name}"]?.takeIf { it.second > System.currentTimeMillis() }?.let {
                 return@Factory dataSpec.withUri(it.first.toUri())
