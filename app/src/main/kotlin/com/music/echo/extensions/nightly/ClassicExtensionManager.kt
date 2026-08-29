@@ -185,7 +185,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         val selectedClient = mutex.withLock {
             resolvedStreams.clear()
             classicTrackMappings.clear()
-            ensureBundledYoutubeExtension()
+            val bundledError = runCatching { ensureBundledYoutubeExtension() }.exceptionOrNull()
             // Android 14+ refuses to load writable DEX/APK files. Echo Nightly makes both
             // the extension directory and every installed APK read-only before parsing.
             extensionDirectory.setReadOnly()
@@ -214,6 +214,15 @@ class ClassicExtensionManager private constructor(private val context: Context) 
                 result.fold(
                     onSuccess = { loadEntry(it) },
                     onFailure = { Entry(file, null, null, it.fullMessage()) },
+                )
+            }.toMutableList()
+            if (bundledError != null && parsed.none { it.id == BUNDLED_YOUTUBE_ID }) {
+                parsed += Entry(
+                    file = File(extensionDirectory, BUNDLED_YOUTUBE_FILE),
+                    metadata = null,
+                    client = null,
+                    error = "Built-in YouTube Music extension could not be prepared: " +
+                        bundledError.fullMessage(),
                 )
             }
             _entries.value = parsed
@@ -249,6 +258,8 @@ class ClassicExtensionManager private constructor(private val context: Context) 
                     requireNotNull(input) { "Unable to open the selected extension" }
                     staging.outputStream().use(input::copyTo)
                 }
+                staging.setReadable(true, true)
+                staging.setWritable(false)
                 val metadata = parseMetadata(staging)
                 val safeId = metadata.id.replace(Regex("[^A-Za-z0-9._-]"), "_")
                 val destination = File(extensionDirectory, "$safeId.apk")
@@ -310,6 +321,8 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             check(staging.sha256().equals(BUNDLED_YOUTUBE_SHA256, ignoreCase = true)) {
                 "Built-in YouTube Music extension failed integrity verification"
             }
+            staging.setReadable(true, true)
+            staging.setWritable(false)
             val metadata = parseMetadata(staging)
             check(metadata.id == BUNDLED_YOUTUBE_ID) {
                 "Unexpected built-in extension id: ${metadata.id}"
@@ -824,10 +837,18 @@ class ClassicExtensionManager private constructor(private val context: Context) 
 
     @Suppress("DEPRECATION")
     private fun parseMetadata(file: File): Metadata {
-        val flags = PackageManager.GET_CONFIGURATIONS or PackageManager.GET_META_DATA or
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES
-            else PackageManager.GET_SIGNATURES
-        val packageInfo = context.packageManager.getPackageArchiveInfo(file.absolutePath, flags)
+        // Extension APKs are executable plugin containers rather than installable apps. Release
+        // artifacts can intentionally be unsigned, so requesting signing certificates makes
+        // PackageManager reject an otherwise valid archive on Android 16.
+        val flags = PackageManager.GET_CONFIGURATIONS or PackageManager.GET_META_DATA
+        val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.packageManager.getPackageArchiveInfo(
+                file.absolutePath,
+                PackageManager.PackageInfoFlags.of(flags.toLong()),
+            )
+        } else {
+            context.packageManager.getPackageArchiveInfo(file.absolutePath, flags)
+        }
             ?: error("Invalid extension APK: ${file.name}")
         val bundle = packageInfo.applicationInfo?.metaData
             ?: error("Extension metadata is missing")
@@ -993,7 +1014,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         private const val BUNDLED_YOUTUBE_FILE = "$BUNDLED_YOUTUBE_ID.apk"
         private const val BUNDLED_YOUTUBE_ASSET = "extensions/$BUNDLED_YOUTUBE_FILE"
         private const val BUNDLED_YOUTUBE_SHA256 =
-            "7764ac4e1682f22ce528052c7ede5502f39da6ed2675b1b28398185161225bc0"
+            "7d6fc2e29997096f2ed4c92fe3589f8c7f7bdda894ead780b35b6e57d9e23746"
         private const val MEDIA_PREFIX = "echoext:"
         private const val COLLECTION_PREFIX = "echoextitem:"
         private const val RESOLVED_STREAM_TTL_MS = 5 * 60 * 1000L
