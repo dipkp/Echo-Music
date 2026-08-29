@@ -1,5 +1,6 @@
 # Built application files
 *.apk
+!app/src/main/assets/extensions/Youtube_music.apk
 *.aar
 *.ap_
 *.aab

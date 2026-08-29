@@ -107,6 +107,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     ) {
         val id: String get() = metadata?.id ?: file.nameWithoutExtension
         val isMusic: Boolean get() = metadata?.type == ExtensionType.MUSIC
+        val isBundled: Boolean get() = id == BUNDLED_YOUTUBE_ID
     }
 
     data class ResolvedStream(val source: Streamable.Source) {
@@ -184,6 +185,7 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         val selectedClient = mutex.withLock {
             resolvedStreams.clear()
             classicTrackMappings.clear()
+            ensureBundledYoutubeExtension()
             // Android 14+ refuses to load writable DEX/APK files. Echo Nightly makes both
             // the extension directory and every installed APK read-only before parsing.
             extensionDirectory.setReadOnly()
@@ -278,6 +280,9 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             ensureLoaded()
             val entry = _entries.value.firstOrNull { it.id == id }
                 ?: error("Extension not found: $id")
+            check(!entry.isBundled) {
+                "The built-in YouTube Music extension cannot be removed. Install a compatible APK to update it."
+            }
             extensionDirectory.setWritable(true)
             entry.file.setWritable(true)
             try {
@@ -292,6 +297,33 @@ class ClassicExtensionManager private constructor(private val context: Context) 
     }
 
     fun isEnabled(id: String): Boolean = preferences.getBoolean(enabledKey(id), true)
+
+    private fun ensureBundledYoutubeExtension() {
+        val destination = File(extensionDirectory, BUNDLED_YOUTUBE_FILE)
+        if (destination.isFile) return
+
+        val staging = File.createTempFile("bundled-youtube-", ".apk", context.cacheDir)
+        try {
+            context.assets.open(BUNDLED_YOUTUBE_ASSET).use { input ->
+                staging.outputStream().use(input::copyTo)
+            }
+            check(staging.sha256().equals(BUNDLED_YOUTUBE_SHA256, ignoreCase = true)) {
+                "Built-in YouTube Music extension failed integrity verification"
+            }
+            val metadata = parseMetadata(staging)
+            check(metadata.id == BUNDLED_YOUTUBE_ID) {
+                "Unexpected built-in extension id: ${metadata.id}"
+            }
+
+            extensionDirectory.setWritable(true)
+            staging.copyTo(destination, overwrite = false)
+            destination.setReadable(true, true)
+            destination.setWritable(false)
+        } finally {
+            staging.delete()
+            extensionDirectory.setReadOnly()
+        }
+    }
 
     suspend fun setEnabled(id: String, enabled: Boolean) {
         preferences.edit().putBoolean(enabledKey(id), enabled).apply()
@@ -957,6 +989,11 @@ class ClassicExtensionManager private constructor(private val context: Context) 
         private const val MEDIA_ITEMS = "classic_extension_media_items"
         private const val SELECTED_MUSIC_EXTENSION = "selected_music_extension"
         private const val EXTENSION_FEATURE_PREFIX = "dev.brahmkshatriya.echo."
+        const val BUNDLED_YOUTUBE_ID = "Youtube_music"
+        private const val BUNDLED_YOUTUBE_FILE = "$BUNDLED_YOUTUBE_ID.apk"
+        private const val BUNDLED_YOUTUBE_ASSET = "extensions/$BUNDLED_YOUTUBE_FILE"
+        private const val BUNDLED_YOUTUBE_SHA256 =
+            "7764ac4e1682f22ce528052c7ede5502f39da6ed2675b1b28398185161225bc0"
         private const val MEDIA_PREFIX = "echoext:"
         private const val COLLECTION_PREFIX = "echoextitem:"
         private const val RESOLVED_STREAM_TTL_MS = 5 * 60 * 1000L
@@ -1017,7 +1054,6 @@ class ClassicExtensionManager private constructor(private val context: Context) 
             return root
         }
 
-        @Suppress("unused")
         private fun File.sha256(): String = inputStream().use { input ->
             val digest = MessageDigest.getInstance("SHA-256")
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)

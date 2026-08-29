@@ -128,9 +128,9 @@ fun ExtensionsSettings(
                     customIcon = {
                         Icon(Icons.Rounded.Add, contentDescription = null)
                     },
-                    title = { Text("Install extension APK") },
+                    title = { Text("Install extension APK manually") },
                     description = {
-                        Text("Choose an Echo Nightly-compatible extension from this device")
+                        Text("Install or update an Echo Nightly-compatible extension from this device")
                     },
                     onClick = {
                         installer.launch(
@@ -176,6 +176,7 @@ fun ExtensionsSettings(
                                 entry.error ?: buildString {
                                     append(metadata?.author ?: "Unknown author")
                                     metadata?.version?.let { append(" • ").append(it) }
+                                    if (entry.isBundled) append(" • Built-in")
                                     if (selectable && selectedId == entry.id) append(" • Active")
                                     loginUsers[entry.id]?.let { append(" • Signed in as ").append(it.name) }
                                     if (!entry.isMusic && metadata != null) {
@@ -228,21 +229,23 @@ fun ExtensionsSettings(
                                         },
                                     )
                                 }
-                                IconButton(
-                                    onClick = {
-                                        scope.launch {
-                                            manager.remove(entry.id).onFailure {
-                                                Toast.makeText(
-                                                    context,
-                                                    it.message ?: "Could not remove extension",
-                                                    Toast.LENGTH_LONG,
-                                                ).show()
+                                if (!entry.isBundled) {
+                                    IconButton(
+                                        onClick = {
+                                            scope.launch {
+                                                manager.remove(entry.id).onFailure {
+                                                    Toast.makeText(
+                                                        context,
+                                                        it.message ?: "Could not remove extension",
+                                                        Toast.LENGTH_LONG,
+                                                    ).show()
+                                                }
                                             }
-                                        }
-                                    },
-                                    onLongClick = {},
-                                ) {
-                                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "Remove")
+                                        },
+                                        onLongClick = {},
+                                    ) {
+                                        Icon(Icons.Rounded.DeleteOutline, contentDescription = "Remove")
+                                    }
                                 }
                             }
                         },
