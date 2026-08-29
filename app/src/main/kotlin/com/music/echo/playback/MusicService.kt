@@ -212,6 +212,7 @@ import timber.log.Timber
 import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import java.time.LocalDateTime
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration.Companion.seconds
@@ -371,6 +372,8 @@ class MusicService :
     var queueTitle: String? = null
 
     val currentMediaMetadata = MutableStateFlow<iad1tya.echo.music.models.MediaMetadata?>(null)
+    private val playbackMetadata =
+        ConcurrentHashMap<String, iad1tya.echo.music.models.MediaMetadata>()
     private val currentSong =
         currentMediaMetadata
             .flatMapLatest { mediaMetadata ->
@@ -1135,7 +1138,6 @@ class MusicService :
                 }
                 addAnalyticsListener(PlaybackStatsListener(false, this@MusicService))
 
-                
             }
         _playerFlow.value = player
         return player
@@ -1459,7 +1461,9 @@ class MusicService :
         
         originalQueueSize = 0
         if (queue.preloadItem != null) {
-            player.setMediaItem(queue.preloadItem!!.toMediaItem())
+            val preloadMetadata = queue.preloadItem!!
+            playbackMetadata[preloadMetadata.id] = preloadMetadata
+            player.setMediaItem(preloadMetadata.toMediaItem())
             player.prepare()
             player.playWhenReady = playWhenReady
         }
@@ -1475,6 +1479,19 @@ class MusicService :
                 queueTitle = initialStatus.title
             }
             if (initialStatus.items.isEmpty()) return@launch
+
+            val metadata = initialStatus.items.mapNotNull { it.metadata }
+            metadata.forEach { playbackMetadata[it.id] = it }
+            val extensionMetadata = metadata.filter {
+                ClassicExtensionManager.isExtensionMediaId(it.id)
+            }
+            if (extensionMetadata.isNotEmpty()) {
+                withContext(Dispatchers.IO) {
+                    database.query {
+                        extensionMetadata.forEach { insert(it) }
+                    }
+                }
+            }
             
             originalQueueSize = initialStatus.items.size
             if (queue.preloadItem != null) {
@@ -1614,7 +1631,7 @@ class MusicService :
                         }
                     }
                 } catch (_: Exception) {
-                    
+
                 }
             }
         }
@@ -1856,40 +1873,42 @@ class MusicService :
 
     fun toggleLike() {
         scope.launch {
-            val songToToggle = currentSong.first()
-            songToToggle?.let {
-                val song = it.song.toggleLike()
-                database.query {
+            val metadata = currentMediaMetadata.value ?: player.currentMetadata ?: return@launch
+            val songToToggle = currentSong.value?.takeIf { it.song.id == metadata.id }
+                ?: withContext(Dispatchers.IO) { database.song(metadata.id).firstOrNull() }
+            val song = songToToggle?.song?.toggleLike() ?: metadata.toSongEntity().toggleLike()
+            database.query {
+                if (songToToggle == null) {
+                    insert(metadata, iad1tya.echo.music.db.entities.SongEntity::toggleLike)
+                } else {
                     update(song)
-                    if (!ClassicExtensionManager.isExtensionMediaId(song.id)) {
-                        syncUtils.likeSong(song)
-                    }
+                }
+                if (!ClassicExtensionManager.isExtensionMediaId(song.id)) {
+                    syncUtils.likeSong(song)
+                }
 
-                    
-                    if (dataStore.get(AutoDownloadOnLikeKey, false) && song.liked) {
-                        
-                        val downloadRequest =
-                            androidx.media3.exoplayer.offline.DownloadRequest
-                                .Builder(song.id, song.id.toUri())
-                                .setCustomCacheKey(song.id)
-                                .setData(song.title.toByteArray())
-                                .build()
-                        androidx.media3.exoplayer.offline.DownloadService.sendAddDownload(
-                            this@MusicService,
-                            ExoDownloadService::class.java,
-                            downloadRequest,
-                            false
-                        )
-                    }
+                if (dataStore.get(AutoDownloadOnLikeKey, false) && song.liked) {
+                    val downloadRequest =
+                        androidx.media3.exoplayer.offline.DownloadRequest
+                            .Builder(song.id, song.id.toUri())
+                            .setCustomCacheKey(song.id)
+                            .setData(song.title.toByteArray())
+                            .build()
+                    androidx.media3.exoplayer.offline.DownloadService.sendAddDownload(
+                        this@MusicService,
+                        ExoDownloadService::class.java,
+                        downloadRequest,
+                        false
+                    )
                 }
-                if (ClassicExtensionManager.isExtensionMediaId(song.id)) {
-                    runCatching {
-                        ClassicExtensionManager.get(this@MusicService)
-                            .setTrackLiked(song.id, song.liked)
-                    }.onFailure { Timber.tag(TAG).w(it, "Extension like action failed") }
-                }
-                currentMediaMetadata.value = player.currentMetadata
             }
+            if (ClassicExtensionManager.isExtensionMediaId(song.id)) {
+                runCatching {
+                    ClassicExtensionManager.get(this@MusicService)
+                        .setTrackLiked(song.id, song.liked)
+                }.onFailure { Timber.tag(TAG).w(it, "Extension like action failed") }
+            }
+            currentMediaMetadata.value = player.currentMetadata
         }
     }
 
@@ -2182,8 +2201,22 @@ class MusicService :
                 closeAudioEffectSession()
             }
         }
-        if (events.containsAny(EVENT_TIMELINE_CHANGED, EVENT_POSITION_DISCONTINUITY)) {
-            currentMediaMetadata.value = player.currentMetadata
+        if (events.containsAny(
+                EVENT_TIMELINE_CHANGED,
+                EVENT_POSITION_DISCONTINUITY,
+                Player.EVENT_MEDIA_ITEM_TRANSITION,
+            )
+        ) {
+            val metadata = player.currentMetadata
+            currentMediaMetadata.value = metadata
+            if (metadata != null) {
+                playbackMetadata[metadata.id] = metadata
+                if (ClassicExtensionManager.isExtensionMediaId(metadata.id)) {
+                    scope.launch(Dispatchers.IO) {
+                        database.query { insert(metadata) }
+                    }
+                }
+            }
         }
 
         
@@ -3026,9 +3059,7 @@ class MusicService :
             if (extensionManager.selectedMusicExtensionId.value != null) {
                 val resolved = runBlocking(Dispatchers.IO) {
                     val dbSong = database.song(mediaId).firstOrNull()
-                    val queueMetadata = player.mediaItems
-                        .firstOrNull { it.mediaId == mediaId }
-                        ?.metadata
+                    val queueMetadata = playbackMetadata[mediaId]
                     val title = dbSong?.title ?: queueMetadata?.title
                         ?: error("Song title is unavailable")
                     val artists = dbSong?.artists?.map { it.name }
@@ -3354,9 +3385,7 @@ class MusicService :
                     manager.resolve(mediaId)
                 } else {
                     val dbSong = database.song(mediaId).firstOrNull()
-                    val queueMetadata = player.mediaItems
-                        .firstOrNull { it.mediaId == mediaId }
-                        ?.metadata
+                    val queueMetadata = playbackMetadata[mediaId]
                     manager.resolveClassicSong(
                         classicMediaId = mediaId,
                         title = dbSong?.title ?: queueMetadata?.title.orEmpty(),
@@ -4111,9 +4140,7 @@ class MusicService :
                     kotlin.runCatching {
                         val manager = ClassicExtensionManager.get(this@MusicService)
                         val dbSong = database.song(mediaId).firstOrNull()
-                        val queueMetadata = player.mediaItems
-                            .firstOrNull { it.mediaId == mediaId }
-                            ?.metadata
+                        val queueMetadata = playbackMetadata[mediaId]
                         val resolved = if (ClassicExtensionManager.isExtensionMediaId(mediaId)) {
                             manager.resolve(mediaId)
                         } else {
